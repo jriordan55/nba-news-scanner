@@ -1,0 +1,9 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+data/*
+!data/clv.csv
+!data/scanner.sqlite3
+_probe*
+_cards.txt

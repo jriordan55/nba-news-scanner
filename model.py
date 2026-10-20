@@ -1,0 +1,284 @@
+"""Turn a Full Court Press card into a minutes call.
+
+PrizePicks voids a prop when the player does not play, so a confirmed
+absence is not an under. It is a search for the teammate who gains the
+minutes. Unders are for players who will play on a lighter load.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+
+from feed import NewsItem
+from names import mentions_player, names_match, norm
+
+OUT_RE = re.compile(
+    r"\b(ruled out|will not play(?!\s+\d)|won'?t play(?!\s+\d)|will miss|going to miss|"
+    r"sidelined|inactive|scratched|out tonight|out tomorrow|"
+    r"out for the(?: season| game| opener| year)?)\b"
+    r"|\b(?:is|are) out\b(?! of (?:the )?rotation)",
+    re.IGNORECASE,
+)
+QUESTIONABLE_RE = re.compile(r"\bquestionable\b", re.IGNORECASE)
+DOUBTFUL_RE = re.compile(r"\bdoubtful\b", re.IGNORECASE)
+UNDECIDED_RE = re.compile(
+    r"undecided|to be determined|\btbd\b|we'?ll sort|whether (?:he|she|they|that)|not sure if",
+    re.IGNORECASE,
+)
+LIMIT_RE = re.compile(
+    r"minutes? (?:limit|cap|restriction)|limited to|slightly limited|"
+    r"on a (?:minutes? )?limit|lighter minutes|lighter (?:minute )?load|"
+    r"fewer minutes|reduced minutes|lower minutes|"
+    r"minutes? (?:will|to) (?:be )?(?:cut|reduced|capped)|"
+    r"not going to be playing \d+|won'?t be playing \d+|won'?t play \d+|"
+    r"smaller role|reduced role|less run",
+    re.IGNORECASE,
+)
+HIGH_MINUTES_RE = re.compile(
+    r"super high minutes|high minutes|\d{2} minutes",
+    re.IGNORECASE,
+)
+NEGATION_RE = re.compile(
+    r"not going to|won'?t|will not|don'?t think|fewer|less|lighter|lower",
+    re.IGNORECASE,
+)
+UP_RE = re.compile(
+    r"more minutes|increased minutes|minutes bump|"
+    r"minutes will (?:rise|increase|go up)|bigger role|expanded role|larger role|"
+    r"increased usage|more usage|usage bump|usage will (?:rise|increase)|"
+    r"ball in his hands|ball in their hands|have the ball a lot|"
+    r"will start(?! to\b)|getting the start|starting tonight|starting tomorrow|"
+    r"moved into the starting|in his place|in her place|start in place|"
+    r"draws the start|bigger workload|into the starting lineup|"
+    r"controlling the offense",
+    re.IGNORECASE,
+)
+ASSIST_RE = re.compile(
+    r"assist|facilitat|playmak|ball in his hands|ball in their hands|"
+    r"have the ball|controlling the offense",
+    re.IGNORECASE,
+)
+REBOUND_RE = re.compile(r"rebound", re.IGNORECASE)
+THREES_RE = re.compile(r"three|3-point|from deep", re.IGNORECASE)
+PROPER_NAME_RE = re.compile(r"[A-Z][a-z]{2,}(?:\s+[A-Z][a-zA-Z'’.-]+){0,2}\b")
+
+POINTS = "player_points"
+REBOUNDS = "player_rebounds"
+ASSISTS = "player_assists"
+THREES = "player_threes"
+PRA = "player_points_rebounds_assists"
+
+
+@dataclass
+class Signal:
+    player: str
+    team: str
+    kind: str
+    side: str | None
+    markets: list[str] = field(default_factory=list)
+    confidence: float = 0.0
+    reason: str = ""
+
+
+def interpret(
+    item: NewsItem,
+    roster: list[str] | None = None,
+    beneficiaries: dict[str, list[str]] | None = None,
+) -> list[Signal]:
+    if item.paywalled:
+        return []
+    roster = list(dict.fromkeys([*item.players, *(roster or [])]))
+    signals: list[Signal] = []
+    for player in item.players:
+        evidence = evidence_for(player, item, roster)
+        kind = classify(evidence)
+        if kind is None:
+            continue
+        signals.append(_signal(player, item.team, kind, evidence))
+    out_names = [signal.player for signal in signals if signal.kind == "out"]
+    if out_names:
+        signals.extend(_gainers(item, out_names, roster, beneficiaries or {}))
+    return _dedupe(signals)
+
+
+def evidence_for(player: str, item: NewsItem, roster: list[str]) -> str:
+    single = len(item.players) == 1
+    chunks: list[str] = []
+    if single or mentions_player(item.headline, player, roster):
+        chunks.append(item.headline)
+    for sentence in _sentences(item.quote):
+        if mentions_player(sentence, player, roster):
+            chunks.append(sentence)
+        elif single and not _about_someone_else(sentence, player, roster):
+            chunks.append(sentence)
+    return " ".join(chunks).strip()
+
+
+def classify(evidence: str) -> str | None:
+    if not evidence:
+        return None
+    if OUT_RE.search(evidence):
+        return "out"
+    if _lighter_minutes(evidence):
+        return "minutes_down"
+    if UP_RE.search(evidence) and not UNDECIDED_RE.search(evidence):
+        return "minutes_up"
+    return None
+
+
+def select_markets(kind: str, evidence: str) -> list[str]:
+    if kind == "out":
+        return []
+    markets = [POINTS, PRA]
+    if ASSIST_RE.search(evidence):
+        markets.append(ASSISTS)
+    if REBOUND_RE.search(evidence):
+        markets.append(REBOUNDS)
+    if THREES_RE.search(evidence):
+        markets.append(THREES)
+    return markets
+
+
+def _signal(player: str, team: str, kind: str, evidence: str) -> Signal:
+    blurb = _short(evidence)
+    if kind == "out":
+        return Signal(
+            player=player,
+            team=team,
+            kind="out",
+            side=None,
+            confidence=0.9,
+            reason=f"{player} is out. {blurb}",
+        )
+    if kind == "minutes_down":
+        return Signal(
+            player=player,
+            team=team,
+            kind="minutes_down",
+            side="Under",
+            markets=select_markets(kind, evidence),
+            confidence=0.78,
+            reason=f"{player} is playing on a lighter load. {blurb}",
+        )
+    return Signal(
+        player=player,
+        team=team,
+        kind="minutes_up",
+        side="Over",
+        markets=select_markets(kind, evidence),
+        confidence=0.72,
+        reason=f"{player} is lined up for more usage. {blurb}",
+    )
+
+
+def _gainers(
+    item: NewsItem,
+    out_names: list[str],
+    roster: list[str],
+    beneficiaries: dict[str, list[str]],
+) -> list[Signal]:
+    found: list[Signal] = []
+    blocked = {norm(name) for name in out_names}
+    for sentence in _sentences(f"{item.headline} {item.quote}"):
+        if not UP_RE.search(sentence) or UNDECIDED_RE.search(sentence):
+            continue
+        for name in roster:
+            if norm(name) in blocked or not mentions_player(sentence, name, roster):
+                continue
+            found.append(
+                Signal(
+                    player=name,
+                    team=item.team,
+                    kind="minutes_up",
+                    side="Over",
+                    markets=select_markets("minutes_up", sentence),
+                    confidence=0.74,
+                    reason=(
+                        f"{name} is the named minute-gainer while "
+                        f"{_join(out_names)} sits. {_short(sentence)}"
+                    ),
+                )
+            )
+    for out_name in out_names:
+        for mapped in _mapped(beneficiaries, out_name):
+            if norm(mapped) in blocked:
+                continue
+            if any(names_match(mapped, signal.player) for signal in found):
+                continue
+            found.append(
+                Signal(
+                    player=mapped,
+                    team=item.team,
+                    kind="minutes_up",
+                    side="Over",
+                    markets=[POINTS, PRA],
+                    confidence=0.64,
+                    reason=(
+                        f"{out_name} is out. beneficiaries.json lists {mapped} "
+                        "as the minute-gainer."
+                    ),
+                )
+            )
+    return found
+
+
+def _mapped(beneficiaries: dict[str, list[str]], player: str) -> list[str]:
+    for key, names in beneficiaries.items():
+        if names_match(key, player):
+            return list(names)
+    return []
+
+
+def _lighter_minutes(evidence: str) -> bool:
+    if LIMIT_RE.search(evidence):
+        return True
+    return bool(HIGH_MINUTES_RE.search(evidence) and NEGATION_RE.search(evidence))
+
+
+def _about_someone_else(sentence: str, player: str, roster: list[str]) -> bool:
+    if mentions_player(sentence, player, roster):
+        return False
+    for other in roster:
+        if not names_match(other, player) and mentions_player(sentence, other, roster):
+            return True
+    if OUT_RE.search(sentence) or QUESTIONABLE_RE.search(sentence) or DOUBTFUL_RE.search(sentence):
+        return True
+    return bool(PROPER_NAME_RE.match(sentence.strip()))
+
+
+def _sentences(text: str) -> list[str]:
+    parts = re.split(r"[\n\r]+|(?<=[.!?])\s+", text or "")
+    cleaned = []
+    for part in parts:
+        sentence = part.strip(" “”\"'")
+        if sentence:
+            cleaned.append(sentence)
+    return cleaned
+
+
+def _short(text: str, limit: int = 180) -> str:
+    compact = re.sub(r"\s+", " ", text).strip()
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 1].rstrip() + "..."
+
+
+def _join(names: list[str]) -> str:
+    if not names:
+        return "a teammate"
+    if len(names) == 1:
+        return names[0]
+    return ", ".join(names[:-1]) + f" and {names[-1]}"
+
+
+def _dedupe(signals: list[Signal]) -> list[Signal]:
+    kept: list[Signal] = []
+    seen: set[tuple[str, str]] = set()
+    for signal in signals:
+        key = (norm(signal.player), signal.kind)
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(signal)
+    return kept
