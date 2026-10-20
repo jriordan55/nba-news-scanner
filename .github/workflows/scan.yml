@@ -2,10 +2,11 @@ name: scan
 
 on:
   schedule:
-    # Every 30 minutes. Each run is billed as at least one GitHub minute, and a
-    # free private repo includes 2,000 minutes a month. This cadence stays
-    # inside that allowance. The shortest cron GitHub allows is 5 minutes.
-    - cron: "*/30 * * * *"
+    # Every 30 minutes, off the top of the hour so GitHub is less likely to
+    # delay it. Each run is billed as at least one minute, and a free private
+    # repo includes 2,000 minutes a month. This cadence stays inside that
+    # allowance. The shortest cron GitHub allows is 5 minutes.
+    - cron: "7,37 * * * *"
   workflow_dispatch:
 
 permissions:
