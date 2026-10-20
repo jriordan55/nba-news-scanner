@@ -6,6 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from feed import NewsItem
+from history import History
 from model import interpret
 from names import names_match
 
@@ -143,6 +144,106 @@ class ModelTests(unittest.TestCase):
     def test_paywall_is_ignored(self):
         item = card(headline="Sign in to read this takeaway and the full quote it came from.", players=[])
         self.assertEqual(interpret(item), [])
+
+    def test_history_drops_a_light_load_that_cleared_the_over(self):
+        history = History(
+            {
+                "lighter": {
+                    "damian lillard": {
+                        "player": "Damian Lillard",
+                        "markets": {
+                            "player_points": {"n": 10, "overs": 7, "unders": 3},
+                            "player_points_rebounds_assists": {"n": 10, "overs": 6, "unders": 4},
+                        },
+                    }
+                }
+            }
+        )
+        item = card(headline="Lillard expects a lighter minutes load.", quote="")
+        self.assertEqual(interpret(item, history=history), [])
+
+    def test_history_adds_the_teammate_who_cleared_draftkings(self):
+        history = History(
+            {
+                "when_out": {
+                    "chet holmgren": {
+                        "player": "Chet Holmgren",
+                        "team": "OKC",
+                        "gainers": [
+                            {
+                                "player": "Isaiah Hartenstein",
+                                "markets": {
+                                    "player_points": {"n": 12, "overs": 8, "unders": 4},
+                                    "player_rebounds": {"n": 12, "overs": 9, "unders": 3},
+                                    "player_assists": {"n": 12, "overs": 4, "unders": 8},
+                                },
+                            }
+                        ],
+                    }
+                }
+            }
+        )
+        item = card(
+            team="OKC",
+            players=["Chet Holmgren"],
+            headline="Chet Holmgren is out tonight.",
+            quote="",
+        )
+        overs = [signal for signal in interpret(item, history=history) if signal.side == "Over"]
+        self.assertEqual([signal.player for signal in overs], ["Isaiah Hartenstein"])
+        self.assertIn("player_points", overs[0].markets)
+        self.assertIn("player_rebounds", overs[0].markets)
+        self.assertNotIn("player_assists", overs[0].markets)
+
+    def test_history_drops_a_light_load_that_cleared_the_over(self):
+        history = History(
+            {
+                "lighter": {
+                    "damian lillard": {
+                        "player": "Damian Lillard",
+                        "markets": {
+                            "player_points": {"n": 10, "overs": 7, "unders": 3},
+                            "player_points_rebounds_assists": {"n": 10, "overs": 6, "unders": 4},
+                        },
+                    }
+                }
+            }
+        )
+        item = card(headline="Lillard expects a lighter minutes load.", quote="")
+        self.assertEqual(interpret(item, history=history), [])
+
+    def test_history_adds_the_teammate_who_cleared_draftkings(self):
+        history = History(
+            {
+                "when_out": {
+                    "chet holmgren": {
+                        "player": "Chet Holmgren",
+                        "team": "OKC",
+                        "gainers": [
+                            {
+                                "player": "Isaiah Hartenstein",
+                                "markets": {
+                                    "player_points": {"n": 12, "overs": 8, "unders": 4},
+                                    "player_rebounds": {"n": 12, "overs": 9, "unders": 3},
+                                    "player_assists": {"n": 12, "overs": 4, "unders": 8},
+                                },
+                            }
+                        ],
+                    }
+                }
+            }
+        )
+        item = card(
+            team="OKC",
+            players=["Chet Holmgren"],
+            headline="Chet Holmgren is out tonight.",
+            quote="",
+        )
+        overs = [signal for signal in interpret(item, history=history) if signal.side == "Over"]
+        self.assertEqual([signal.player for signal in overs], ["Isaiah Hartenstein"])
+        self.assertIn("player_points", overs[0].markets)
+        self.assertIn("player_rebounds", overs[0].markets)
+        self.assertNotIn("player_assists", overs[0].markets)
 
     def test_accent_and_suffix_names_match(self):
         self.assertTrue(names_match("Nikola Topić", "Nikola Topic"))

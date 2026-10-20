@@ -21,6 +21,7 @@ import requests
 from alerts import Alerter
 from config import FEED_URLS, MARKET_LABELS, ROOT, load_config
 from fcp_session import attach as attach_fcp_session
+from history import load_history
 from feed import NewsItem, fetch_feed
 from model import OUT_RE, UP_RE, Signal, classify, interpret
 from names import mentions_player, names_match, norm
@@ -67,6 +68,7 @@ def run(config, store: Store, once: bool) -> None:
     odds = OddsClient(config.odds_api_key, session)
     alerter = Alerter(config, session)
     beneficiaries = _load_beneficiaries(ROOT / "beneficiaries.json")
+    history = load_history(ROOT / "absence_history.json")
     store.export_csv()
     log.info("watching %s", ", ".join(FEED_URLS))
     log.info("clv file: %s", store.csv_path)
@@ -84,7 +86,7 @@ def run(config, store: Store, once: bool) -> None:
     while True:
         started = time.time()
         try:
-            cycle(config, store, odds, alerter, beneficiaries, noted)
+            cycle(config, store, odds, alerter, beneficiaries, history, noted)
             refresh_closes(store, odds)
         except Exception:
             log.exception("scan cycle failed")
@@ -102,7 +104,7 @@ def run(config, store: Store, once: bool) -> None:
         time.sleep(max(1.0, config.poll_seconds - (time.time() - started)))
 
 
-def cycle(config, store, odds, alerter, beneficiaries, noted: set[str]) -> None:
+def cycle(config, store, odds, alerter, beneficiaries, history, noted: set[str]) -> None:
     session = odds.session
     items: list[NewsItem] = []
     for url in FEED_URLS:
@@ -118,14 +120,14 @@ def cycle(config, store, odds, alerter, beneficiaries, noted: set[str]) -> None:
             continue
         seen_ids.add(item.id)
         try:
-            handle_item(config, store, odds, alerter, beneficiaries, noted, item, now)
+            handle_item(config, store, odds, alerter, beneficiaries, history, noted, item, now)
         except OddsError as exc:
             log.error("odds lookup failed, will retry this card: %s", exc)
         except Exception:
             log.exception("could not handle %s", item.headline)
 
 
-def handle_item(config, store, odds, alerter, beneficiaries, noted, item: NewsItem, now: datetime) -> None:
+def handle_item(config, store, odds, alerter, beneficiaries, history, noted, item: NewsItem, now: datetime) -> None:
     if item.paywalled or not item.url:
         store.mark_seen(item, alerted=False)
         return
@@ -143,7 +145,7 @@ def handle_item(config, store, odds, alerter, beneficiaries, noted, item: NewsIt
             if 0 < len(mentioned) <= 3:
                 item.players = mentioned
 
-    preliminary = interpret(item, roster=item.players, beneficiaries=beneficiaries)
+    preliminary = interpret(item, roster=item.players, beneficiaries=beneficiaries, history=history)
     if not preliminary:
         store.mark_seen(item, alerted=False)
         return
@@ -166,7 +168,7 @@ def handle_item(config, store, odds, alerter, beneficiaries, noted, item: NewsIt
     if board is None:
         board = odds.board(event)
     roster = list(dict.fromkeys([*item.players, *board.players]))
-    signals = interpret(item, roster=roster, beneficiaries=beneficiaries)
+    signals = interpret(item, roster=roster, beneficiaries=beneficiaries, history=history)
     outs = [signal for signal in signals if signal.kind == "out"]
     priced = [signal for signal in signals if signal.side]
 

@@ -24,6 +24,8 @@ PrizePicks voids a prop when the player does not play, so a confirmed absence is
 
 Questionable tags, undecided rotations, and contract notes are ignored.
 
+`absence_history.json` is last regular season at DraftKings, for players who are still on that same team. When someone sits, the alert uses the teammate and the market that actually cleared (points, rebounds, assists, threes, or PRA) at least 56% of the time over 8 or more games. A lighter-minute note becomes an under only when that player's own short games stayed under. Anyone who changed teams this year is left out of that file.
+
 When a post says someone is out and does not name a replacement, add the teammate in `beneficiaries.json`:
 
 ```json

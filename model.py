@@ -85,6 +85,7 @@ def interpret(
     item: NewsItem,
     roster: list[str] | None = None,
     beneficiaries: dict[str, list[str]] | None = None,
+    history=None,
 ) -> list[Signal]:
     if item.paywalled:
         return []
@@ -99,7 +100,10 @@ def interpret(
     out_names = [signal.player for signal in signals if signal.kind == "out"]
     if out_names:
         signals.extend(_gainers(item, out_names, roster, beneficiaries or {}))
-    return _dedupe(signals)
+    signals = _dedupe(signals)
+    if history is not None:
+        signals = _apply_history(item, signals, history)
+    return signals
 
 
 def evidence_for(player: str, item: NewsItem, roster: list[str]) -> str:
@@ -270,6 +274,63 @@ def _join(names: list[str]) -> str:
     if len(names) == 1:
         return names[0]
     return ", ".join(names[:-1]) + f" and {names[-1]}"
+
+
+def _apply_history(item: NewsItem, signals: list[Signal], history) -> list[Signal]:
+    outs = [signal.player for signal in signals if signal.kind == "out"]
+    kept: list[Signal] = []
+    present = {norm(signal.player) for signal in signals if signal.kind == "minutes_up"}
+    for signal in signals:
+        if signal.kind == "minutes_down":
+            markets = history.under_markets(signal.player)
+            if markets is None:
+                kept.append(signal)
+            elif markets:
+                signal.markets = markets
+                note = history.lighter_note(signal.player)
+                if note:
+                    signal.reason = f"{signal.reason} {note}".strip()
+                kept.append(signal)
+            continue
+        if signal.kind == "minutes_up" and outs:
+            markets = history.over_markets(outs, signal.player)
+            if markets is None:
+                kept.append(signal)
+            elif markets:
+                signal.markets = markets
+                _out, note = history.over_note(outs, signal.player)
+                if note:
+                    signal.reason = f"{signal.reason} {note}".strip()
+                kept.append(signal)
+            continue
+        kept.append(signal)
+    for out_name in outs:
+        gainer = history.best_gainer(out_name)
+        if not gainer or not gainer.get("markets_to_bet"):
+            continue
+        if norm(gainer["player"]) in present:
+            continue
+        if any(names_match(gainer["player"], name) for name in outs):
+            continue
+        present.add(norm(gainer["player"]))
+        points = (gainer.get("markets") or {}).get(POINTS) or {}
+        hits = int(points.get("overs") or 0)
+        games = int(points.get("n") or 0)
+        record = f"DraftKings over hit {hits} of {games} last regular season." if games else ""
+        kept.append(
+            Signal(
+                player=gainer["player"],
+                team=gainer.get("team") or item.team,
+                kind="minutes_up",
+                side="Over",
+                markets=list(gainer["markets_to_bet"]),
+                confidence=0.66,
+                reason=(
+                    f"{gainer['player']} took the minutes when {gainer.get('out') or out_name} sat. {record}"
+                ).strip(),
+            )
+        )
+    return kept
 
 
 def _dedupe(signals: list[Signal]) -> list[Signal]:

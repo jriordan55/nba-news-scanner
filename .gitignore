@@ -1,4 +1,6 @@
 .env
+nba_player_props_2026.xlsx
+nba_player_props_2026.tmp.xlsx
 __pycache__/
 *.pyc
 .venv/
