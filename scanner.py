@@ -1,8 +1,8 @@
 """24/7 Full Court Press scanner.
 
 Reads https://fcp.news/?all=1 (and the minutes, role, injury, and health
-feeds), prices a side at PrizePicks through The Odds API, and keeps the
-alert price next to the closing price in data/clv.csv.
+feeds), prices a side on Onyx, and keeps the alert price next to the
+closing price in data/clv.csv.
 """
 
 from __future__ import annotations
@@ -40,9 +40,6 @@ def main(argv: list[str] | None = None) -> int:
     if "--status" in args:
         print("\n".join(store.status_lines()))
         return 0
-    if not config.odds_api_key:
-        log.error("Set ODDS_API_KEY in .env before starting.")
-        return 1
     lock = _Lock(config.data_dir / "scanner.lock")
     if not lock.acquire():
         log.error("Another scanner is already running. Close that window before starting a second one.")
@@ -81,6 +78,7 @@ def run(config, store: Store, once: bool) -> None:
         log.info("alerts go to %s", " and ".join(channels))
     else:
         log.info("Discord and Telegram are blank. Alerts will be written to the log and data/clv.csv.")
+    log.info("prices come from Onyx")
     noted: set[str] = set()
     last_beat = time.time()
     while True:
@@ -184,15 +182,10 @@ def handle_item(config, store, odds, alerter, beneficiaries, history, noted, ite
     legs: list[Leg] = []
     if priced:
         legs = _price(priced, board, prefer_retail=False)
-        missing = [signal for signal in priced if not _covered(signal, legs)]
-        if missing and not odds.quota_exhausted:
-            retail = odds.board(event, prefer="retail")
-            legs.extend(_price(missing, retail, prefer_retail=True))
-        legs = _prefer_prizepicks(legs)
         legs = [
             leg
             for leg in legs
-            if not store.has_open(leg.event_id, leg.player, leg.market, leg.side)
+            if not store.has_open(leg.event_id, leg.player, leg.market_label, leg.side, leg.home, leg.away)
         ]
 
     fresh_outs = [signal for signal in outs if store.take_watch(signal, item)]

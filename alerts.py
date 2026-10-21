@@ -92,7 +92,7 @@ def render_watch(item: NewsItem, outs: list[Signal]) -> str:
     team = outs[0].team or item.team
     lines = [
         f"{team} OUT: {names}.",
-        "PrizePicks voids a player who does not play, so this is not an under.",
+        "A player prop is void if he does not play, so this is not an under.",
         "The post does not name who gains the minutes. Add that teammate under players in beneficiaries.json to price the over automatically.",
         item.headline,
     ]

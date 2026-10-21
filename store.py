@@ -126,18 +126,29 @@ class Store:
         self.conn.commit()
         return cursor.rowcount == 1
 
-    def has_open(self, event_id: str, player: str, market: str, side: str) -> bool:
+    def has_open(
+        self,
+        event_id: str,
+        player: str,
+        market: str,
+        side: str,
+        home: str = "",
+        away: str = "",
+    ) -> bool:
         rows = self.conn.execute(
             """
-            SELECT player, market, side FROM bets
-            WHERE event_id = ? AND close_status = 'open'
-            """,
-            (event_id,),
+            SELECT player, market, side, event_id, home, away FROM bets
+            WHERE close_status = 'open'
+            """
         ).fetchall()
-        return any(
-            names_match(row["player"], player) and row["market"] == market and row["side"] == side
-            for row in rows
-        )
+        for row in rows:
+            if not (names_match(row["player"], player) and row["market"] == market and row["side"] == side):
+                continue
+            if row["event_id"] == event_id:
+                return True
+            if home and away and names_match(row["home"], home) and names_match(row["away"], away):
+                return True
+        return False
 
     def insert_legs(self, item: NewsItem, legs: list[Leg]) -> None:
         fired = _now()

@@ -1,22 +1,18 @@
-"""The Odds API client. PrizePicks props live on the us_dfs region."""
+"""Live NBA prop boards. Prices come from Onyx."""
 
 from __future__ import annotations
 
 import logging
-import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 import requests
 
-from config import ABBR_BY_NAME, PROP_MARKETS, TEAMS
+from config import ABBR_BY_NAME, TEAMS
 from names import names_match
 
 log = logging.getLogger("nba-scanner")
-
-ODDS_ROOT = "https://api.the-odds-api.com/v4"
-_KEY_RE = re.compile(r"apiKey=[^&\s]+", re.IGNORECASE)
 
 
 class OddsError(RuntimeError):
@@ -82,9 +78,7 @@ class OddsClient:
         self._events: list[dict] = []
         self._events_at = 0.0
         self._boards: dict[tuple[str, str], tuple[float, Board]] = {}
-        self.disabled_until = 0.0
-        self.quota_exhausted = False
-        self._prizepicks = None
+        self._onyx = None
 
     def event_for_team(self, abbr: str, now: datetime, max_hours: int) -> dict | None:
         names = {name.casefold() for name in TEAMS.get(abbr, ())}
@@ -107,34 +101,24 @@ class OddsClient:
                 chosen = event
         return chosen
 
-    def board(self, event: dict, prefer: str = "prizepicks", ttl: float = 120) -> Board:
-        if time.time() < self.disabled_until:
-            raise OddsError("odds api paused after an auth failure")
-        event_id = event["id"]
-        cached = self._boards.get((event_id, prefer))
+    def board(self, event: dict, prefer: str = "onyx", ttl: float = 120) -> Board:
+        event_id = str(event.get("id") or "")
+        cached = self._boards.get((event_id, "onyx"))
         if cached and time.time() - cached[0] < ttl:
             return cached[1]
-        try:
-            if self.quota_exhausted:
-                raise OddsError("odds api monthly quota is used up")
-            if prefer == "prizepicks":
-                payload = self._props(event_id, region="us_dfs", books="prizepicks")
-            else:
-                payload = self._props(event_id, region="us", books="draftkings,fanduel")
-        except OddsError:
-            if not self.quota_exhausted:
-                raise
-            board = self._partner_board(event)
-            self._boards[(event_id, prefer)] = (time.time(), board)
-            return board
+        match = self._onyx_game(event_id, event.get("home_team", ""), event.get("away_team", ""), _parse_time(event.get("commence_time")))
+        if match is None:
+            raise OddsError("onyx has no board for this game")
         board = Board(
-            event_id=event_id,
-            home=event.get("home_team", ""),
-            away=event.get("away_team", ""),
-            commence=_parse_time(event.get("commence_time")) or datetime.now(timezone.utc),
-            offers=parse_offers(payload),
+            event_id=match["id"],
+            home=match["home_team"],
+            away=match["away_team"],
+            commence=_parse_time(match["commence_time"]) or datetime.now(timezone.utc),
+            offers=list(match["offers"]),
         )
-        self._boards[(event_id, prefer)] = (time.time(), board)
+        self._boards[(event_id, "onyx")] = (time.time(), board)
+        self._boards[(match["id"], "onyx")] = (time.time(), board)
+        log.info("priced %s from Onyx (%s lines)", board.game, len(board.offers))
         return board
 
     def reprice(self, event_id: str, home: str, away: str, commence: datetime, book_key: str, ttl: float) -> Board:
@@ -144,82 +128,46 @@ class OddsClient:
             "away_team": away,
             "commence_time": commence.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
-        prefer = "prizepicks" if book_key == "prizepicks" else "retail"
-        return self.board(event, prefer=prefer, ttl=ttl)
+        return self.board(event, ttl=ttl)
+
+    def _slate(self):
+        from onyx import Onyx, OnyxError
+
+        if self._onyx is None:
+            self._onyx = Onyx(self.session)
+        try:
+            return self._onyx.games()
+        except OnyxError as exc:
+            raise OddsError(str(exc)) from exc
+
+    def _onyx_game(self, event_id: str, home: str, away: str, commence: datetime | None) -> dict | None:
+        games = self._slate()
+        for game in games:
+            if event_id and game["id"] == event_id:
+                return game
+        if not home or not away or commence is None:
+            return None
+        best = None
+        best_gap = None
+        for game in games:
+            if game["home_team"].casefold() != home.casefold() or game["away_team"].casefold() != away.casefold():
+                continue
+            start = _parse_time(game["commence_time"])
+            if start is None:
+                continue
+            gap = abs((start - commence).total_seconds())
+            if gap > 4 * 3600:
+                continue
+            if best_gap is None or gap < best_gap:
+                best = game
+                best_gap = gap
+        return best
 
     def _upcoming(self) -> list[dict]:
-        if time.time() - self._events_at > 600 or not self._events:
-            payload = self._get(f"{ODDS_ROOT}/sports/basketball_nba/events")
-            if not isinstance(payload, list):
-                raise OddsError("events response was not a list")
-            self._events = payload
+        if time.time() - self._events_at > 120 or not self._events:
+            self._events = self._slate()
             self._events_at = time.time()
-            log.info("nba slate has %s events", len(self._events))
         return self._events
-
-    def _props(self, event_id: str, region: str, books: str) -> dict:
-        return self._get(
-            f"{ODDS_ROOT}/sports/basketball_nba/events/{event_id}/odds",
-            {
-                "regions": region,
-                "markets": PROP_MARKETS,
-                "oddsFormat": "american",
-                "bookmakers": books,
-            },
-        )
-
-    def _get(self, url: str, params: dict | None = None) -> dict | list:
-        query = {"apiKey": self.api_key, **(params or {})}
-        try:
-            response = self.session.get(url, params=query, timeout=30)
-        except requests.RequestException as exc:
-            raise OddsError(_safe(str(exc))) from exc
-        remaining = response.headers.get("x-requests-remaining")
-        spent = response.headers.get("x-requests-last")
-        log.debug("odds %s status=%s spent=%s remaining=%s", url, response.status_code, spent, remaining)
-        if response.status_code in (401, 403):
-            if _error_code(response) == "OUT_OF_USAGE_CREDITS":
-                self.quota_exhausted = True
-                raise OddsError("odds api monthly quota is used up")
-            self.disabled_until = time.time() + 1800
-            raise OddsError(f"odds api returned {response.status_code}. Check ODDS_API_KEY. Pausing odds calls for 30 minutes.")
-        if response.status_code == 429:
-            raise OddsError("odds api rate limited")
-        if response.status_code >= 400:
-            raise OddsError(f"odds api {response.status_code}: {_safe(response.text[:240])}")
-        if remaining is not None and float(remaining) <= 0:
-            self.quota_exhausted = True
-            log.warning("odds api monthly quota is used up. PrizePicks lines will be read directly until it resets.")
-        elif remaining and float(remaining) < 1000:
-            log.warning("odds api credits almost gone: %s remaining", remaining)
-        return response.json()
-
-    def _partner_board(self, event: dict) -> Board:
-        from prizepicks import PrizePicks, PrizePicksError
-
-        if self._prizepicks is None:
-            self._prizepicks = PrizePicks(self.session)
-        try:
-            offers = self._prizepicks.offers(
-                event.get("home_team", ""),
-                event.get("away_team", ""),
-                _parse_time(event.get("commence_time")) or datetime.now(timezone.utc),
-            )
-        except PrizePicksError as exc:
-            raise OddsError(str(exc)) from exc
-        log.info(
-            "priced %s @ %s from PrizePicks (%s lines)",
-            _abbr(event.get("away_team", "")),
-            _abbr(event.get("home_team", "")),
-            len(offers),
-        )
-        return Board(
-            event_id=event["id"],
-            home=event.get("home_team", ""),
-            away=event.get("away_team", ""),
-            commence=_parse_time(event.get("commence_time")) or datetime.now(timezone.utc),
-            offers=offers,
-        )
 
 
 def parse_offers(payload: dict) -> list[Offer]:
@@ -289,17 +237,3 @@ def _parse_time(value) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
-
-
-def _safe(text: str) -> str:
-    return _KEY_RE.sub("apiKey=REDACTED", text)
-
-
-def _error_code(response: requests.Response) -> str:
-    try:
-        payload = response.json()
-    except ValueError:
-        return ""
-    if not isinstance(payload, dict):
-        return ""
-    return str(payload.get("error_code") or "")
