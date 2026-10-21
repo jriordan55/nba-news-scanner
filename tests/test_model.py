@@ -36,6 +36,19 @@ class ModelTests(unittest.TestCase):
         self.assertEqual([signal.kind for signal in signals], ["minutes_down"])
         self.assertEqual(signals[0].side, "Under")
 
+    def test_coming_off_the_bench_is_an_under(self):
+        item = card(
+            team="POR",
+            players=["Ja Morant"],
+            headline="Morant would come off the bench in the season opener.",
+            quote="he'd be coming off the bench in the season opener",
+        )
+        signals = interpret(item)
+        self.assertEqual(len(signals), 1)
+        self.assertEqual(signals[0].side, "Under")
+        self.assertIn("player_points", signals[0].markets)
+        self.assertNotIn("player_assists", signals[0].markets)
+
     def test_lighter_minutes_is_an_under(self):
         item = card(
             headline="Lillard expects a lighter minutes load because of Portland's guard depth.",
@@ -68,6 +81,17 @@ class ModelTests(unittest.TestCase):
         signals = interpret(item)
         self.assertEqual(signals[0].side, "Over")
         self.assertIn("player_assists", signals[0].markets)
+
+    def test_already_out_is_not_an_under(self):
+        item = card(
+            team="DAL",
+            players=["Dereck Lively II", "Santi Aldama"],
+            headline="Santi Aldama and Dereck Lively II are already out for Wednesday's opener at Houston.",
+            quote="Aldama and Lively are already out.",
+        )
+        signals = interpret(item)
+        self.assertEqual(sorted(signal.player for signal in signals), ["Dereck Lively II", "Santi Aldama"])
+        self.assertTrue(all(signal.kind == "out" and signal.side is None for signal in signals))
 
     def test_confirmed_out_is_not_an_under(self):
         item = card(

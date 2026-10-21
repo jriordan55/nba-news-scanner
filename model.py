@@ -17,7 +17,7 @@ OUT_RE = re.compile(
     r"\b(ruled out|will not play(?!\s+\d)|won'?t play(?!\s+\d)|will miss|going to miss|"
     r"sidelined|inactive|scratched|out tonight|out tomorrow|"
     r"out for the(?: season| game| opener| year)?)\b"
-    r"|\b(?:is|are) out\b(?! of (?:the )?rotation)",
+    r"|\b(?:is|are)(?: already| still)? out\b(?! of (?:the )?rotation)",
     re.IGNORECASE,
 )
 QUESTIONABLE_RE = re.compile(r"\bquestionable\b", re.IGNORECASE)
@@ -32,7 +32,7 @@ LIMIT_RE = re.compile(
     r"fewer minutes|reduced minutes|lower minutes|"
     r"minutes? (?:will|to) (?:be )?(?:cut|reduced|capped)|"
     r"not going to be playing \d+|won'?t be playing \d+|won'?t play \d+|"
-    r"smaller role|reduced role|less run",
+    r"smaller role|reduced role|less run|com(?:e|ing) off the bench",
     re.IGNORECASE,
 )
 HIGH_MINUTES_RE = re.compile(
@@ -124,7 +124,7 @@ def classify(evidence: str) -> str | None:
         return None
     if OUT_RE.search(evidence):
         return "out"
-    if _lighter_minutes(evidence):
+    if _lighter_minutes(evidence) and not UNDECIDED_RE.search(evidence):
         return "minutes_down"
     if UP_RE.search(evidence) and not UNDECIDED_RE.search(evidence):
         return "minutes_up"

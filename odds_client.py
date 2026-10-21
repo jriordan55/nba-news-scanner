@@ -83,6 +83,8 @@ class OddsClient:
         self._events_at = 0.0
         self._boards: dict[tuple[str, str], tuple[float, Board]] = {}
         self.disabled_until = 0.0
+        self.quota_exhausted = False
+        self._prizepicks = None
 
     def event_for_team(self, abbr: str, now: datetime, max_hours: int) -> dict | None:
         names = {name.casefold() for name in TEAMS.get(abbr, ())}
@@ -112,10 +114,19 @@ class OddsClient:
         cached = self._boards.get((event_id, prefer))
         if cached and time.time() - cached[0] < ttl:
             return cached[1]
-        if prefer == "prizepicks":
-            payload = self._props(event_id, region="us_dfs", books="prizepicks")
-        else:
-            payload = self._props(event_id, region="us", books="draftkings,fanduel")
+        try:
+            if self.quota_exhausted:
+                raise OddsError("odds api monthly quota is used up")
+            if prefer == "prizepicks":
+                payload = self._props(event_id, region="us_dfs", books="prizepicks")
+            else:
+                payload = self._props(event_id, region="us", books="draftkings,fanduel")
+        except OddsError:
+            if not self.quota_exhausted:
+                raise
+            board = self._partner_board(event)
+            self._boards[(event_id, prefer)] = (time.time(), board)
+            return board
         board = Board(
             event_id=event_id,
             home=event.get("home_team", ""),
@@ -167,15 +178,48 @@ class OddsClient:
         spent = response.headers.get("x-requests-last")
         log.debug("odds %s status=%s spent=%s remaining=%s", url, response.status_code, spent, remaining)
         if response.status_code in (401, 403):
+            if _error_code(response) == "OUT_OF_USAGE_CREDITS":
+                self.quota_exhausted = True
+                raise OddsError("odds api monthly quota is used up")
             self.disabled_until = time.time() + 1800
             raise OddsError(f"odds api returned {response.status_code}. Check ODDS_API_KEY. Pausing odds calls for 30 minutes.")
         if response.status_code == 429:
             raise OddsError("odds api rate limited")
         if response.status_code >= 400:
             raise OddsError(f"odds api {response.status_code}: {_safe(response.text[:240])}")
-        if remaining and int(float(remaining)) < 1000:
+        if remaining is not None and float(remaining) <= 0:
+            self.quota_exhausted = True
+            log.warning("odds api monthly quota is used up. PrizePicks lines will be read directly until it resets.")
+        elif remaining and float(remaining) < 1000:
             log.warning("odds api credits almost gone: %s remaining", remaining)
         return response.json()
+
+    def _partner_board(self, event: dict) -> Board:
+        from prizepicks import PrizePicks, PrizePicksError
+
+        if self._prizepicks is None:
+            self._prizepicks = PrizePicks(self.session)
+        try:
+            offers = self._prizepicks.offers(
+                event.get("home_team", ""),
+                event.get("away_team", ""),
+                _parse_time(event.get("commence_time")) or datetime.now(timezone.utc),
+            )
+        except PrizePicksError as exc:
+            raise OddsError(str(exc)) from exc
+        log.info(
+            "priced %s @ %s from PrizePicks (%s lines)",
+            _abbr(event.get("away_team", "")),
+            _abbr(event.get("home_team", "")),
+            len(offers),
+        )
+        return Board(
+            event_id=event["id"],
+            home=event.get("home_team", ""),
+            away=event.get("away_team", ""),
+            commence=_parse_time(event.get("commence_time")) or datetime.now(timezone.utc),
+            offers=offers,
+        )
 
 
 def parse_offers(payload: dict) -> list[Offer]:
@@ -249,3 +293,13 @@ def _parse_time(value) -> datetime | None:
 
 def _safe(text: str) -> str:
     return _KEY_RE.sub("apiKey=REDACTED", text)
+
+
+def _error_code(response: requests.Response) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("error_code") or "")

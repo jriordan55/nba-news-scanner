@@ -122,7 +122,7 @@ def cycle(config, store, odds, alerter, beneficiaries, history, noted: set[str])
         try:
             handle_item(config, store, odds, alerter, beneficiaries, history, noted, item, now)
         except OddsError as exc:
-            log.error("odds lookup failed, will retry this card: %s", exc)
+            log.error("odds lookup failed, will retry this card (%s): %s", item.headline, exc)
         except Exception:
             log.exception("could not handle %s", item.headline)
 
@@ -166,7 +166,16 @@ def handle_item(config, store, odds, alerter, beneficiaries, history, noted, ite
         store.mark_seen(item, alerted=False)
         return
     if board is None:
-        board = odds.board(event)
+        try:
+            board = odds.board(event)
+        except OddsError as exc:
+            log.warning("could not price %s: %s", item.headline, exc)
+            fresh = [signal for signal in preliminary if signal.kind == "out" and store.take_watch(signal, item)]
+            if fresh:
+                alerter.send_watch(item, fresh)
+            if not any(signal.side for signal in preliminary):
+                store.mark_seen(item, alerted=bool(fresh))
+            return
     roster = list(dict.fromkeys([*item.players, *board.players]))
     signals = interpret(item, roster=roster, beneficiaries=beneficiaries, history=history)
     outs = [signal for signal in signals if signal.kind == "out"]
@@ -176,7 +185,7 @@ def handle_item(config, store, odds, alerter, beneficiaries, history, noted, ite
     if priced:
         legs = _price(priced, board, prefer_retail=False)
         missing = [signal for signal in priced if not _covered(signal, legs)]
-        if missing:
+        if missing and not odds.quota_exhausted:
             retail = odds.board(event, prefer="retail")
             legs.extend(_price(missing, retail, prefer_retail=True))
         legs = _prefer_prizepicks(legs)
