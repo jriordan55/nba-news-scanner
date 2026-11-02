@@ -1,8 +1,9 @@
 """24/7 Full Court Press scanner.
 
 Reads https://fcp.news/?all=1 (and the minutes, role, injury, and health
-feeds), prices a side on Onyx, and keeps the alert price next to the
-closing price in data/clv.csv.
+feeds). The Odds API is called only after a player or an affected
+teammate is ready to alert. The alert price is kept next to the closing
+price in data/clv.csv.
 """
 
 from __future__ import annotations
@@ -23,8 +24,8 @@ from config import FEED_URLS, MARKET_LABELS, ROOT, load_config
 from fcp_session import attach as attach_fcp_session
 from history import load_history
 from feed import NewsItem, fetch_feed
-from model import OUT_RE, UP_RE, Signal, classify, interpret
-from names import mentions_player, names_match, norm
+from model import Signal, interpret
+from names import names_match, norm
 from odds_client import Board, Leg, OddsClient, OddsError, choose_main_line
 from store import Store
 
@@ -40,6 +41,9 @@ def main(argv: list[str] | None = None) -> int:
     if "--status" in args:
         print("\n".join(store.status_lines()))
         return 0
+    if not config.odds_api_key:
+        log.error("Set ODDS_API_KEY in .env before starting.")
+        return 1
     lock = _Lock(config.data_dir / "scanner.lock")
     if not lock.acquire():
         log.error("Another scanner is already running. Close that window before starting a second one.")
@@ -78,7 +82,7 @@ def run(config, store: Store, once: bool) -> None:
         log.info("alerts go to %s", " and ".join(channels))
     else:
         log.info("Discord and Telegram are blank. Alerts will be written to the log and data/clv.csv.")
-    log.info("prices come from Onyx")
+    log.info("odds api is called only for a player or teammate an alert is about")
     noted: set[str] = set()
     last_beat = time.time()
     while True:
@@ -133,23 +137,23 @@ def handle_item(config, store, odds, alerter, beneficiaries, history, noted, ite
         store.mark_seen(item, alerted=False)
         return
 
-    event = None
-    board = None
-    if not item.players and item.team and _might_name_a_player(item):
-        event = odds.event_for_team(item.team, now, config.max_tip_hours)
-        if event is not None:
-            board = odds.board(event)
-            mentioned = [name for name in board.players if mentions_player(item.text, name, board.players)]
-            if 0 < len(mentioned) <= 3:
-                item.players = mentioned
-
-    preliminary = interpret(item, roster=item.players, beneficiaries=beneficiaries, history=history)
-    if not preliminary:
+    # Decide the player and any affected teammate before spending an API call.
+    signals = interpret(item, roster=item.players, beneficiaries=beneficiaries, history=history)
+    if not signals:
         store.mark_seen(item, alerted=False)
         return
+    outs = [signal for signal in signals if signal.kind == "out"]
+    priced = [signal for signal in signals if signal.side]
+    if not priced:
+        fresh = [signal for signal in outs if store.take_watch(signal, item)]
+        if fresh:
+            alerter.send_watch(item, fresh)
+        store.mark_seen(item, alerted=bool(fresh))
+        return
 
-    if event is None and item.team:
-        event = odds.event_for_team(item.team, now, config.max_tip_hours)
+    names = ", ".join(dict.fromkeys(signal.player for signal in priced))
+    log.info("alert for %s, pricing that game only: %s", names, item.headline)
+    event = odds.event_for_team(item.team, now, config.max_tip_hours) if item.team else None
     if event is None:
         log.info(
             "no game inside %s hours for %s, so this card is not priced: %s",
@@ -157,36 +161,34 @@ def handle_item(config, store, odds, alerter, beneficiaries, history, noted, ite
             item.team or "?",
             item.headline,
         )
-        outs = [signal for signal in preliminary if signal.kind == "out"]
         fresh = [signal for signal in outs if store.take_watch(signal, item)]
         if fresh:
             alerter.send_watch(item, fresh)
         store.mark_seen(item, alerted=False)
         return
-    if board is None:
-        try:
-            board = odds.board(event)
-        except OddsError as exc:
-            log.warning("could not price %s: %s", item.headline, exc)
-            fresh = [signal for signal in preliminary if signal.kind == "out" and store.take_watch(signal, item)]
-            if fresh:
-                alerter.send_watch(item, fresh)
-            if not any(signal.side for signal in preliminary):
-                store.mark_seen(item, alerted=bool(fresh))
-            return
-    roster = list(dict.fromkeys([*item.players, *board.players]))
-    signals = interpret(item, roster=roster, beneficiaries=beneficiaries, history=history)
-    outs = [signal for signal in signals if signal.kind == "out"]
-    priced = [signal for signal in signals if signal.side]
 
-    legs: list[Leg] = []
-    if priced:
-        legs = _price(priced, board, prefer_retail=False)
-        legs = [
-            leg
-            for leg in legs
-            if not store.has_open(leg.event_id, leg.player, leg.market_label, leg.side, leg.home, leg.away)
-        ]
+    markets: list[str] = []
+    for signal in priced:
+        for market in signal.markets:
+            if market not in markets:
+                markets.append(market)
+    board = odds.board(event, markets, prefer="prizepicks")
+    legs = _price(priced, board, prefer_retail=False)
+    missing = [signal for signal in priced if not _covered(signal, legs)]
+    if missing:
+        retail_markets: list[str] = []
+        for signal in missing:
+            for market in signal.markets:
+                if market not in retail_markets:
+                    retail_markets.append(market)
+        retail = odds.board(event, retail_markets, prefer="retail")
+        legs.extend(_price(missing, retail, prefer_retail=True))
+        legs = _prefer_prizepicks(legs)
+    legs = [
+        leg
+        for leg in legs
+        if not store.has_open(leg.event_id, leg.player, leg.market_label, leg.side, leg.home, leg.away)
+    ]
 
     fresh_outs = [signal for signal in outs if store.take_watch(signal, item)]
     if legs:
@@ -196,14 +198,11 @@ def handle_item(config, store, odds, alerter, beneficiaries, history, noted, ite
         return
     if fresh_outs:
         alerter.send_watch(item, fresh_outs)
-    if not priced:
-        store.mark_seen(item, alerted=False)
-        return
     if item.id not in noted:
         noted.add(item.id)
         log.info(
             "no line yet for %s (%s). Will keep checking until the card is 6 hours old.",
-            ", ".join(signal.player for signal in priced),
+            names,
             item.headline,
         )
     if item.published is None or item.published < now - RETRY_UNPRICED:
@@ -211,28 +210,23 @@ def handle_item(config, store, odds, alerter, beneficiaries, history, noted, ite
 
 
 def refresh_closes(store: Store, odds: OddsClient) -> None:
+    """Update a close only from a board already fetched for an alert.
+
+    A separate poll of every open bet would call the API when nobody new
+    is being alerted.
+    """
     now = datetime.now(timezone.utc)
-    groups: dict[tuple[str, str], list] = {}
+    groups: dict[str, list] = {}
     for bet in store.open_bets():
-        groups.setdefault((bet["event_id"], bet["book_key"]), []).append(bet)
+        groups.setdefault(bet["event_id"], []).append(bet)
     changed = False
-    for (event_id, book_key), bets in groups.items():
+    for event_id, bets in groups.items():
+        board = odds.cached_board(event_id)
+        if board is None:
+            continue
         start = datetime.fromisoformat(bets[0]["game_start"])
         if start.tzinfo is None:
             start = start.replace(tzinfo=timezone.utc)
-        ttl = 0 if start - now <= timedelta(minutes=10) else 180
-        try:
-            board = odds.reprice(
-                event_id,
-                bets[0]["home"],
-                bets[0]["away"],
-                start,
-                book_key,
-                ttl,
-            )
-        except OddsError as exc:
-            log.warning("close refresh failed for %s: %s", bets[0]["game"], exc)
-            continue
         for bet in bets:
             offer = choose_main_line(board.offers, bet["player"], _market_key(bet["market"]), bet["side"])
             tip = now >= start
@@ -317,10 +311,6 @@ def _prefer_prizepicks(legs: list[Leg]) -> list[Leg]:
         if current is None or (leg.book_key == "prizepicks" and current.book_key != "prizepicks"):
             chosen[key] = leg
     return list(chosen.values())
-
-
-def _might_name_a_player(item: NewsItem) -> bool:
-    return classify(item.text) is not None or bool(OUT_RE.search(item.text) or UP_RE.search(item.text))
 
 
 def _market_key(label: str) -> str:

@@ -1,8 +1,14 @@
-"""Live NBA prop boards. Prices come from Onyx."""
+"""The Odds API, called only for a game that already has an alert.
+
+The events list and the prop board are not fetched while the scanner is
+just reading the news. A call happens after a player, or a teammate the
+news affects, is ready to be priced.
+"""
 
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -13,6 +19,9 @@ from config import ABBR_BY_NAME, TEAMS
 from names import names_match
 
 log = logging.getLogger("nba-scanner")
+
+ODDS_ROOT = "https://api.the-odds-api.com/v4"
+_KEY_RE = re.compile(r"apiKey=[^&\s]+", re.IGNORECASE)
 
 
 class OddsError(RuntimeError):
@@ -77,8 +86,8 @@ class OddsClient:
         self.session = session
         self._events: list[dict] = []
         self._events_at = 0.0
-        self._boards: dict[tuple[str, str], tuple[float, Board]] = {}
-        self._onyx = None
+        self._boards: dict[tuple, tuple[float, Board]] = {}
+        self.disabled_until = 0.0
 
     def event_for_team(self, abbr: str, now: datetime, max_hours: int) -> dict | None:
         names = {name.casefold() for name in TEAMS.get(abbr, ())}
@@ -101,73 +110,84 @@ class OddsClient:
                 chosen = event
         return chosen
 
-    def board(self, event: dict, prefer: str = "onyx", ttl: float = 120) -> Board:
-        event_id = str(event.get("id") or "")
-        cached = self._boards.get((event_id, "onyx"))
+    def board(self, event: dict, markets: list[str], prefer: str = "prizepicks", ttl: float = 120) -> Board:
+        """Price one game. Caller must already know which players are being alerted."""
+        if time.time() < self.disabled_until:
+            raise OddsError("odds api paused after an auth failure")
+        wanted = [market for market in markets if market]
+        if not wanted:
+            raise OddsError("no markets to price")
+        event_id = str(event["id"])
+        if prefer == "prizepicks":
+            region, books = "us_dfs", "prizepicks"
+        else:
+            region, books = "us", "draftkings"
+        key = (event_id, region, ",".join(wanted))
+        cached = self._boards.get(key)
         if cached and time.time() - cached[0] < ttl:
             return cached[1]
-        match = self._onyx_game(event_id, event.get("home_team", ""), event.get("away_team", ""), _parse_time(event.get("commence_time")))
-        if match is None:
-            raise OddsError("onyx has no board for this game")
-        board = Board(
-            event_id=match["id"],
-            home=match["home_team"],
-            away=match["away_team"],
-            commence=_parse_time(match["commence_time"]) or datetime.now(timezone.utc),
-            offers=list(match["offers"]),
+        payload = self._get(
+            f"{ODDS_ROOT}/sports/basketball_nba/events/{event_id}/odds",
+            {
+                "regions": region,
+                "markets": ",".join(wanted),
+                "oddsFormat": "american",
+                "bookmakers": books,
+            },
         )
-        self._boards[(event_id, "onyx")] = (time.time(), board)
-        self._boards[(match["id"], "onyx")] = (time.time(), board)
-        log.info("priced %s from Onyx (%s lines)", board.game, len(board.offers))
+        if not isinstance(payload, dict):
+            raise OddsError("props response was not an object")
+        board = Board(
+            event_id=event_id,
+            home=event.get("home_team", ""),
+            away=event.get("away_team", ""),
+            commence=_parse_time(event.get("commence_time")) or datetime.now(timezone.utc),
+            offers=parse_offers(payload),
+        )
+        self._boards[key] = (time.time(), board)
+        log.info("priced %s at %s (%s lines)", board.game, board.offers[0].book if board.offers else books, len(board.offers))
         return board
 
-    def reprice(self, event_id: str, home: str, away: str, commence: datetime, book_key: str, ttl: float) -> Board:
-        event = {
-            "id": event_id,
-            "home_team": home,
-            "away_team": away,
-            "commence_time": commence.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        }
-        return self.board(event, ttl=ttl)
-
-    def _slate(self):
-        from onyx import Onyx, OnyxError
-
-        if self._onyx is None:
-            self._onyx = Onyx(self.session)
-        try:
-            return self._onyx.games()
-        except OnyxError as exc:
-            raise OddsError(str(exc)) from exc
-
-    def _onyx_game(self, event_id: str, home: str, away: str, commence: datetime | None) -> dict | None:
-        games = self._slate()
-        for game in games:
-            if event_id and game["id"] == event_id:
-                return game
-        if not home or not away or commence is None:
-            return None
-        best = None
-        best_gap = None
-        for game in games:
-            if game["home_team"].casefold() != home.casefold() or game["away_team"].casefold() != away.casefold():
-                continue
-            start = _parse_time(game["commence_time"])
-            if start is None:
-                continue
-            gap = abs((start - commence).total_seconds())
-            if gap > 4 * 3600:
-                continue
-            if best_gap is None or gap < best_gap:
-                best = game
-                best_gap = gap
-        return best
+    def cached_board(self, event_id: str) -> Board | None:
+        for (stored_id, _region, _markets), (_stamp, board) in self._boards.items():
+            if stored_id == event_id:
+                return board
+        return None
 
     def _upcoming(self) -> list[dict]:
-        if time.time() - self._events_at > 120 or not self._events:
-            self._events = self._slate()
+        if time.time() < self.disabled_until:
+            raise OddsError("odds api paused after an auth failure")
+        if time.time() - self._events_at > 600 or not self._events:
+            payload = self._get(f"{ODDS_ROOT}/sports/basketball_nba/events")
+            if not isinstance(payload, list):
+                raise OddsError("events response was not a list")
+            self._events = payload
             self._events_at = time.time()
+            log.info("nba slate has %s events", len(self._events))
         return self._events
+
+    def _get(self, url: str, params: dict | None = None) -> dict | list:
+        if not self.api_key:
+            raise OddsError("ODDS_API_KEY is missing")
+        query = {"apiKey": self.api_key, **(params or {})}
+        try:
+            response = self.session.get(url, params=query, timeout=30)
+        except requests.RequestException as exc:
+            raise OddsError(_safe(str(exc))) from exc
+        remaining = response.headers.get("x-requests-remaining")
+        spent = response.headers.get("x-requests-last")
+        log.info("odds api call cost=%s remaining=%s", spent, remaining)
+        if response.status_code in (401, 403):
+            if _error_code(response) == "OUT_OF_USAGE_CREDITS":
+                self.disabled_until = time.time() + 1800
+                raise OddsError("odds api monthly quota is used up")
+            self.disabled_until = time.time() + 1800
+            raise OddsError(f"odds api returned {response.status_code}. Check ODDS_API_KEY.")
+        if response.status_code == 429:
+            raise OddsError("odds api rate limited")
+        if response.status_code >= 400:
+            raise OddsError(f"odds api {response.status_code}: {_safe(response.text[:240])}")
+        return response.json()
 
 
 def parse_offers(payload: dict) -> list[Offer]:
@@ -237,3 +257,17 @@ def _parse_time(value) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _safe(text: str) -> str:
+    return _KEY_RE.sub("apiKey=REDACTED", text)
+
+
+def _error_code(response: requests.Response) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("error_code") or "")
