@@ -85,6 +85,10 @@ def run(config, store: Store, once: bool) -> None:
     log.info("odds api is called only for a player or teammate an alert is about")
     noted: set[str] = set()
     last_beat = time.time()
+    raw_limit = os.environ.get("RUN_FOR_SECONDS", "").strip()
+    deadline = time.time() + int(raw_limit) if raw_limit else None
+    if deadline is not None:
+        log.info("this run watches for %s minutes", max(1, int(raw_limit) // 60))
     while True:
         started = time.time()
         try:
@@ -92,8 +96,8 @@ def run(config, store: Store, once: bool) -> None:
             refresh_closes(store, odds)
         except Exception:
             log.exception("scan cycle failed")
-        if once:
-            log.info("single pass finished")
+        if once or (deadline is not None and time.time() >= deadline):
+            log.info("single pass finished" if once else "watch window finished")
             store.export_csv()
             return
         if time.time() - last_beat > 600:

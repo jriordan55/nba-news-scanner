@@ -2,15 +2,15 @@ name: scan
 
 on:
   schedule:
-    # Every 30 minutes, off the top of the hour so GitHub is less likely to
-    # delay it. Each run is billed as at least one minute, and a free private
-    # repo includes 2,000 minutes a month. This cadence stays inside that
-    # allowance. The shortest cron GitHub allows is 5 minutes.
-    - cron: "7,37 * * * *"
+    # GitHub's timer often starts late, and a missed slot is not replayed.
+    # A job that is already running checks the feed every 20 seconds. A new
+    # job is queued every 2 hours and takes over before the 6-hour limit.
+    - cron: "7 */2 * * *"
   workflow_dispatch:
 
 permissions:
   contents: write
+  actions: read
 
 concurrency:
   group: nba-news-scan
@@ -19,7 +19,7 @@ concurrency:
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
 
@@ -28,46 +28,78 @@ jobs:
           python-version: "3.11"
           cache: pip
 
+      - name: Leave the running scanner alone
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .github/should_scan.py
+
       - name: Install
+        if: steps.gate.outputs.run == 'true'
         run: pip install -r requirements.txt
 
-      - name: Scan once
+      - name: Watch the feed
+        if: steps.gate.outputs.run == 'true'
         env:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           LOOKBACK_HOURS: "12"
           MAX_TIP_HOURS: "96"
-        run: python -u scanner.py --once
-
-      - name: Save state
+          POLL_SECONDS: "20"
+          RUN_FOR_SECONDS: "19200"
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -f data/clv.csv data/scanner.sqlite3
-          if git diff --cached --quiet; then
-            exit 0
-          fi
-          git commit -m "Update scan state"
-          git push
 
-      - name: Confirm Discord on a manual run
-        if: github.event_name == 'workflow_dispatch'
-        env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-        run: |
-          python - <<'PY'
-          import json, os, urllib.request
-          req = urllib.request.Request(
-              os.environ["DISCORD_WEBHOOK_URL"],
-              data=json.dumps({
-                  "content": "NBA news scanner is running on GitHub every 30 minutes, including when the PC is off."
-              }).encode(),
-              headers={"Content-Type": "application/json", "User-Agent": "nba-news-scanner"},
-          )
-          try:
-              with urllib.request.urlopen(req, timeout=20) as response:
-                  print("discord", response.status)
-          except Exception as exc:
-              print("discord failed", type(exc).__name__)
-              raise SystemExit(1)
-          PY
+          snapshot() {
+            python .github/snapshot_state.py
+          }
+
+          save_state() {
+            snapshot || return 0
+            if [ ! -f data/.state.hash ]; then
+              return 0
+            fi
+            now=$(cat data/.state.hash)
+            prev=""
+            if [ -f data/.state.hash.prev ]; then
+              prev=$(cat data/.state.hash.prev)
+            fi
+            if [ "$prev" = "$now" ]; then
+              rm -f data/.scanner.snapshot.sqlite3 data/.state.hash
+              return 0
+            fi
+            git add -f data/clv.csv
+            blob=$(git hash-object -w data/.scanner.snapshot.sqlite3)
+            git update-index --add --cacheinfo 100644,"$blob",data/scanner.sqlite3
+            rm -f data/.scanner.snapshot.sqlite3 data/.state.hash
+            if git diff --cached --quiet; then
+              printf '%s' "$now" > data/.state.hash.prev
+              return 0
+            fi
+            git commit -m "Update scan state" || true
+            if git push; then
+              printf '%s' "$now" > data/.state.hash.prev
+            else
+              echo "state push failed; the next pass will retry"
+            fi
+          }
+
+          snapshot || true
+          if [ -f data/.state.hash ]; then
+            mv data/.state.hash data/.state.hash.prev
+          fi
+          rm -f data/.scanner.snapshot.sqlite3
+
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            python -c "import json,os,urllib.request; req=urllib.request.Request(os.environ['DISCORD_WEBHOOK_URL'], data=json.dumps({'content':'NBA news scanner is watching the feed continuously, including when the PC is off.'}).encode(), headers={'Content-Type':'application/json','User-Agent':'nba-news-scanner'}); urllib.request.urlopen(req, timeout=20).read()"
+          fi
+
+          python -u scanner.py &
+          pid=$!
+          while kill -0 "$pid" 2>/dev/null; do
+            sleep 20
+            save_state || true
+          done
+          wait "$pid" || true
+          save_state || true
