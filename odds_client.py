@@ -78,6 +78,7 @@ class Leg:
     game_start: datetime
     confidence: float
     reason: str
+    defense: str = ""
 
 
 class OddsClient:

@@ -1,6 +1,6 @@
 # NBA news scanner
 
-Watches the public [Full Court Press](https://fcp.news/?all=1) feed around the clock. When a card is about minutes or a role, it prices an over or under at PrizePicks through The Odds API and sends it to Discord or Telegram. The price at alert time and the price at tip-off are kept in `data/clv.csv`.
+Watches the public [Full Court Press](https://fcp.news/?all=1) feed around the clock. When a card is about minutes or a role, it prices an over or under at PrizePicks through The Odds API and sends it to Discord or Telegram. The alert also includes what that opponent has allowed to the player's position over the last 15 games. The price at alert time and the price at tip-off are kept in `data/clv.csv`.
 
 ## Run it
 

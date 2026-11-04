@@ -25,6 +25,7 @@ from fcp_session import attach as attach_fcp_session
 from history import load_history
 from feed import NewsItem, fetch_feed
 from injuries import Injury, events as injury_events, fetch_injuries, next_state
+from matchup import matchup_for
 from model import Signal, interpret
 from names import names_match, norm
 from odds_client import Board, Leg, OddsClient, OddsError, choose_main_line
@@ -256,6 +257,7 @@ def handle_item(config, store, odds, alerter, beneficiaries, history, noted, ite
 
     fresh_outs = [signal for signal in outs if store.take_watch(signal, item)]
     if legs:
+        _add_defense(odds.session, legs)
         alerter.send_priced(item, legs, outs)
         store.insert_legs(item, legs)
         store.mark_seen(item, alerted=True)
@@ -325,6 +327,18 @@ def refresh_closes(store: Store, odds: OddsClient) -> None:
                 changed = True
     if changed:
         store.export_csv()
+
+
+def _add_defense(session: requests.Session, legs: list[Leg]) -> None:
+    groups: dict[tuple[str, str], list[Leg]] = {}
+    for leg in legs:
+        groups.setdefault((leg.away, leg.home), []).append(leg)
+    for (away, home), group in groups.items():
+        matchup = matchup_for(session, away, home)
+        if matchup is None:
+            continue
+        for leg in group:
+            leg.defense = matchup.note(leg.player, leg.market)
 
 
 def _price(signals: list[Signal], board: Board, prefer_retail: bool) -> list[Leg]:

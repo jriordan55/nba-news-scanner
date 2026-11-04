@@ -80,6 +80,8 @@ def render_priced(item: NewsItem, legs: list[Leg], outs: list[Signal]) -> str:
         )
         lines.append(f"Game: {leg.game} {format_et(leg.game_start)}")
         lines.append(leg.reason)
+        if leg.defense:
+            lines.append(leg.defense)
     lines.append("Alert price saved in data/clv.csv. The close fills in at tip-off.")
     lines.append(item.headline)
     if item.url:
@@ -117,7 +119,12 @@ def discord_embeds(item: NewsItem, legs: list[Leg], outs: list[Signal]) -> list[
                     {"name": leg.book, "value": f"{_line(leg.line)} ({_price(leg.price)})", "inline": True},
                     {"name": "Game", "value": f"{leg.game} · {format_et(leg.game_start)}", "inline": True},
                     {"name": "News", "value": item.headline[:250], "inline": False},
-                ],
+                ]
+                + (
+                    [{"name": "Defense, last 15", "value": leg.defense[:300], "inline": False}]
+                    if leg.defense
+                    else []
+                ),
                 "footer": {"text": "Alert price saved to data/clv.csv. Close fills in at tip-off."},
             }
         )
