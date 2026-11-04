@@ -192,7 +192,9 @@ def _stored_injury(row) -> Injury:
 
 
 def handle_item(config, store, odds, alerter, beneficiaries, history, noted, item: NewsItem, now: datetime) -> None:
-    if item.paywalled or not item.url:
+    if item.paywalled:
+        return
+    if not item.url:
         store.mark_seen(item, alerted=False)
         return
     if item.published and item.published < now - timedelta(hours=config.lookback_hours):
