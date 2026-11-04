@@ -14,6 +14,7 @@ FEED_URLS = (
     "https://fcp.news/?all=1&cat=minutes_usage",
     "https://fcp.news/?all=1&cat=role_rotation",
     "https://fcp.news/?all=1&cat=health_progress",
+    "https://fcp.news/coachspeak",
 )
 
 # Full names as The Odds API prints them. Clippers have shown up both ways.

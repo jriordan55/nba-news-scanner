@@ -1,7 +1,7 @@
 """24/7 Full Court Press scanner.
 
-Reads https://fcp.news/?all=1 (and the minutes, role, injury, and health
-feeds). The Odds API is called only after a player or an affected
+Reads https://fcp.news/?all=1 (and the minutes, role, injury, health,
+and coachspeak feeds). The Odds API is called only after a player or an affected
 teammate is ready to alert. The alert price is kept next to the closing
 price in data/clv.csv.
 """

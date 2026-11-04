@@ -4,6 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from config import FEED_URLS
 from feed import parse_html
 
 HTML = """
@@ -38,6 +39,9 @@ class FeedTests(unittest.TestCase):
         self.assertIn("38 minutes", public.quote)
         self.assertIsNotNone(public.published)
         self.assertTrue(items[1].paywalled)
+
+    def test_coachspeak_is_on_the_scan(self):
+        self.assertIn("https://fcp.news/coachspeak", FEED_URLS)
 
 
 if __name__ == "__main__":
