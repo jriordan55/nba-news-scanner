@@ -24,6 +24,7 @@ from config import FEED_URLS, MARKET_LABELS, ROOT, load_config
 from fcp_session import attach as attach_fcp_session
 from history import load_history
 from feed import NewsItem, fetch_feed
+from injuries import Injury, events as injury_events, fetch_injuries, next_state
 from model import Signal, interpret
 from names import names_match, norm
 from odds_client import Board, Leg, OddsClient, OddsError, choose_main_line
@@ -141,6 +142,52 @@ def cycle(config, store, odds, alerter, beneficiaries, history, noted: set[str])
             log.error("odds lookup failed, will retry this card (%s): %s", item.headline, exc)
         except Exception:
             log.exception("could not handle %s", item.headline)
+    _scan_injuries(config, store, odds, alerter, beneficiaries, history, noted)
+
+
+def _scan_injuries(config, store, odds, alerter, beneficiaries, history, noted) -> None:
+    """Alert when the ESPN injury report changes. The first read is a baseline."""
+    try:
+        current = fetch_injuries(odds.session)
+    except requests.RequestException as exc:
+        log.warning("injury report failed: %s", exc)
+        return
+    if len({injury.team for injury in current}) < 20:
+        log.warning("injury report looked partial (%s teams), skipping", len({injury.team for injury in current}))
+        return
+    previous = {row["athlete_key"]: _stored_injury(row) for row in store.injury_rows()}
+    if not previous:
+        store.replace_injuries([injury.row() for injury in current])
+        log.info("injury baseline saved for %s players. Alerts start on the next change.", len(current))
+        return
+    resolved: set[str] = set()
+    now = datetime.now(timezone.utc)
+    for event in injury_events(previous, current):
+        try:
+            handle_item(config, store, odds, alerter, beneficiaries, history, noted, event.item, now)
+        except OddsError as exc:
+            log.error("odds lookup failed, will retry this injury (%s): %s", event.item.headline, exc)
+            continue
+        except Exception:
+            log.exception("could not handle injury %s", event.item.headline)
+            continue
+        if store.seen(event.item.id):
+            resolved.add(event.key)
+    store.replace_injuries(
+        [injury.row() for injury in next_state(previous, current, resolved)]
+    )
+
+
+def _stored_injury(row) -> Injury:
+    return Injury(
+        key=row["athlete_key"],
+        player=row["player"],
+        team=row["team"],
+        status=row["status"],
+        note=row["note"] or "",
+        url=row["url"] or "",
+        updated=row["updated_at"] or "",
+    )
 
 
 def handle_item(config, store, odds, alerter, beneficiaries, history, noted, item: NewsItem, now: datetime) -> None:

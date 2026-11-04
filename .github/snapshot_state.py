@@ -24,8 +24,14 @@ def main() -> None:
     dst.close()
     src.close()
     con = sqlite3.connect(SNAP)
+    present = {
+        name
+        for (name,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
     parts: list[str] = []
-    for table in ("seen", "watches", "bets"):
+    for table in ("seen", "watches", "bets", "injuries"):
+        if table not in present:
+            continue
         rows = con.execute(f"SELECT * FROM {table} ORDER BY 1").fetchall()
         parts.append(repr(rows))
     con.close()

@@ -4,7 +4,7 @@ Watches the public [Full Court Press](https://fcp.news/?all=1) feed around the c
 
 ## Run it
 
-The always-on copy is a private GitHub Action. One job stays awake and checks the feed about every 20 seconds, including when this PC is off. The live sheet is `data/clv.csv` in that repo: https://github.com/jriordan55/nba-news-scanner
+The always-on copy is a private GitHub Action. One job stays awake and checks Full Court Press and the ESPN injury report about every 20 seconds, including when this PC is off. The live sheet is `data/clv.csv` in that repo: https://github.com/jriordan55/nba-news-scanner
 
 Leave `run.bat` off while that job is active. A second copy sends the same card twice.
 

@@ -68,6 +68,15 @@ class Store:
                 player TEXT,
                 team TEXT
             );
+            CREATE TABLE IF NOT EXISTS injuries (
+                athlete_key TEXT PRIMARY KEY,
+                player TEXT NOT NULL,
+                team TEXT NOT NULL,
+                status TEXT NOT NULL,
+                note TEXT,
+                url TEXT,
+                updated_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS bets (
                 bet_id TEXT PRIMARY KEY,
                 fired_at TEXT NOT NULL,
@@ -111,6 +120,20 @@ class Store:
             "SELECT alerted FROM seen WHERE news_id = ?", (news_id,)
         ).fetchone()
         return bool(row and row["alerted"])
+
+    def injury_rows(self) -> list[sqlite3.Row]:
+        return list(self.conn.execute("SELECT * FROM injuries").fetchall())
+
+    def replace_injuries(self, rows: list[tuple]) -> None:
+        self.conn.execute("DELETE FROM injuries")
+        self.conn.executemany(
+            """
+            INSERT INTO injuries (athlete_key, player, team, status, note, url, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        self.conn.commit()
 
     def count_seen(self) -> int:
         return int(self.conn.execute("SELECT COUNT(*) FROM seen").fetchone()[0])
