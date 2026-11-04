@@ -104,6 +104,56 @@ class ModelTests(unittest.TestCase):
         self.assertEqual([signal.kind for signal in signals], ["out"])
         self.assertIsNone(signals[0].side)
 
+    def test_return_to_the_lineup_is_an_over(self):
+        item = card(
+            team="LAC",
+            players=["Rui Hachimura", "Derrick Jones Jr.", "Max Strus"],
+            headline="Hachimura and Jones Jr. are back against the Heat and Strus is cleared too.",
+            quote=(
+                "Rui Hachimura and Derrick Jones Jr. are all back tomorrow vs. the Heat. "
+                "Max Strus is also not on the injury report and is cleared to play."
+            ),
+        )
+        signals = interpret(item)
+        overs = {signal.player for signal in signals if signal.side == "Over"}
+        self.assertEqual(overs, {"Rui Hachimura", "Derrick Jones Jr.", "Max Strus"})
+
+    def test_started_over_splits_the_two_players(self):
+        item = card(
+            team="BOS",
+            players=["Jayson Tatum", "Mitchell Robinson", "Neemias Queta"],
+            headline="Queta started over Robinson for the first time while Tatum's minutes with each have been split.",
+            quote="Queta, who started over Mitch for the first time last night.",
+        )
+        signals = interpret(item)
+        by_player = {signal.player: signal.side for signal in signals}
+        self.assertEqual(by_player.get("Neemias Queta"), "Over")
+        self.assertEqual(by_player.get("Mitchell Robinson"), "Under")
+        self.assertNotIn("Jayson Tatum", by_player)
+
+    def test_ball_handler_is_an_assists_over(self):
+        item = card(
+            team="NOP",
+            players=["Trendon Watford"],
+            headline="Watford brought the ball up and initiated offense.",
+            quote="He was able to bring the ball up, initiate our offense, be a very good playmaker.",
+        )
+        signals = interpret(item)
+        self.assertEqual(signals[0].side, "Over")
+        self.assertIn("player_assists", signals[0].markets)
+
+    def test_unnamed_on_the_card_still_gets_the_start(self):
+        item = card(
+            team="TOR",
+            players=["Jakob Poeltl"],
+            headline="Poeltl is a late scratch against the Lakers.",
+            quote="Jakob Poeltl is a late scratch. Trayce Jackson-Davis starts in his place.",
+        )
+        signals = interpret(item)
+        overs = [signal for signal in signals if signal.side == "Over"]
+        self.assertEqual(overs[0].player, "Trayce Jackson-Davis")
+        self.assertTrue(any(signal.player == "Jakob Poeltl" and signal.side is None for signal in signals))
+
     def test_named_replacement_becomes_the_over(self):
         item = card(
             team="OKC",

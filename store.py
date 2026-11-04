@@ -106,12 +106,23 @@ class Store:
         row = self.conn.execute("SELECT 1 FROM seen WHERE news_id = ?", (news_id,)).fetchone()
         return row is not None
 
+    def alerted(self, news_id: str) -> bool:
+        row = self.conn.execute(
+            "SELECT alerted FROM seen WHERE news_id = ?", (news_id,)
+        ).fetchone()
+        return bool(row and row["alerted"])
+
     def count_seen(self) -> int:
         return int(self.conn.execute("SELECT COUNT(*) FROM seen").fetchone()[0])
 
     def mark_seen(self, item: NewsItem, alerted: bool) -> None:
         self.conn.execute(
-            "INSERT OR IGNORE INTO seen (news_id, seen_at, headline, alerted) VALUES (?, ?, ?, ?)",
+            """
+            INSERT INTO seen (news_id, seen_at, headline, alerted) VALUES (?, ?, ?, ?)
+            ON CONFLICT(news_id) DO UPDATE SET
+                alerted = MAX(seen.alerted, excluded.alerted),
+                headline = excluded.headline
+            """,
             (item.id, _now(), item.headline, 1 if alerted else 0),
         )
         self.conn.commit()

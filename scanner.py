@@ -118,9 +118,19 @@ def cycle(config, store, odds, alerter, beneficiaries, history, noted: set[str])
     seen_ids: set[str] = set()
     now = datetime.now(timezone.utc)
     for item in items:
-        if item.id in seen_ids or store.seen(item.id):
+        if item.id in seen_ids:
             continue
         seen_ids.add(item.id)
+        # A card that produced no alert can match a wider rule on a later pass.
+        # Cards that already alerted stay closed.
+        if store.seen(item.id) and store.alerted(item.id):
+            continue
+        if (
+            store.seen(item.id)
+            and item.published
+            and item.published < now - timedelta(hours=config.lookback_hours)
+        ):
+            continue
         try:
             handle_item(config, store, odds, alerter, beneficiaries, history, noted, item, now)
         except OddsError as exc:

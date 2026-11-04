@@ -15,8 +15,9 @@ from names import mentions_player, names_match, norm
 
 OUT_RE = re.compile(
     r"\b(ruled out|will not play(?!\s+\d)|won'?t play(?!\s+\d)|will miss|going to miss|"
-    r"sidelined|inactive|scratched|out tonight|out tomorrow|"
-    r"out for the(?: season| game| opener| year)?)\b"
+    r"sidelined|inactive|scratched|late scratch|out tonight|out tomorrow|"
+    r"out for the(?: season| game| opener| year)?|"
+    r"remains? out|sits out|sitting out|done for the (?:night|game))\b"
     r"|\b(?:is|are)(?: already| still)? out\b(?! of (?:the )?rotation)",
     re.IGNORECASE,
 )
@@ -50,10 +51,22 @@ UP_RE = re.compile(
     r"ball in his hands|ball in their hands|have the ball a lot|"
     r"will start(?! to\b)|getting the start|starting tonight|starting tomorrow|"
     r"moved into the starting|in his place|in her place|start in place|"
-    r"draws the start|bigger workload|into the starting lineup|"
-    r"controlling the offense",
+    r"draws the start|gets the start|bigger workload|into the starting lineup|"
+    r"controlling the offense|"
+    r"are (?:all )?back\b(?!\s+to\b)|cleared to play|not on the injury report|"
+    r"brought the ball up|brings the ball up|bring the ball up|"
+    r"initiat(?:e|es|ed|ing) (?:the |our )?offense|"
+    r"chance to run with|run with the .+ role|"
+    r"\bthe horse\b|primary option|first option|go-to scorer|featured role",
     re.IGNORECASE,
 )
+_NAME = r"[A-Z][\w'’.-]+(?:[-\s]+[A-Z][\w'’.-]+){0,3}"
+REPLACEMENT_RE = re.compile(
+    rf"({_NAME})\s+(?:starts in (?:his|her) place|will start in (?:his|her) place|"
+    rf"gets the start|draws the start|takes\b.{{0,80}}?\bstarting spot)",
+)
+STARTED_OVER_RE = re.compile(rf"({_NAME})\s+started over\s+({_NAME})")
+LINEUP_WITH_RE = re.compile(r"lineup with\s+([A-Z][\w'’.-]+)")
 ASSIST_RE = re.compile(
     r"assist|facilitat|playmak|ball in his hands|ball in their hands|"
     r"have the ball|controlling the offense",
@@ -89,7 +102,7 @@ def interpret(
 ) -> list[Signal]:
     if item.paywalled:
         return []
-    roster = list(dict.fromkeys([*item.players, *(roster or [])]))
+    roster = list(dict.fromkeys([*item.players, *(roster or []), *_replacement_names(item)]))
     signals: list[Signal] = []
     for player in item.players:
         evidence = evidence_for(player, item, roster)
@@ -97,6 +110,8 @@ def interpret(
         if kind is None:
             continue
         signals.append(_signal(player, item.team, kind, evidence))
+    signals.extend(_start_swaps(item, roster))
+    signals.extend(_preferred_lineup(item, roster))
     out_names = [signal.player for signal in signals if signal.kind == "out"]
     if out_names:
         signals.extend(_gainers(item, out_names, roster, beneficiaries or {}))
@@ -174,6 +189,66 @@ def _signal(player: str, team: str, kind: str, evidence: str) -> Signal:
         confidence=0.72,
         reason=f"{player} is lined up for more usage. {blurb}",
     )
+
+
+def _replacement_names(item: NewsItem) -> list[str]:
+    text = f"{item.headline} {item.quote}"
+    names: list[str] = []
+    for match in REPLACEMENT_RE.finditer(text):
+        names.append(match.group(1).strip(" ."))
+    return names
+
+
+def _resolve(name: str, roster: list[str]) -> str | None:
+    cleaned = name.strip(" .")
+    for person in roster:
+        if names_match(cleaned, person):
+            return person
+    last = norm(cleaned).split()[-1] if norm(cleaned) else ""
+    if len(last) < 4:
+        return None
+    hits = [person for person in roster if norm(person).split()[-1] == last]
+    unique = {norm(person) for person in hits}
+    if len(unique) == 1:
+        return hits[0]
+    if len(cleaned.split()) >= 2:
+        return cleaned
+    return None
+
+
+def _start_swaps(item: NewsItem, roster: list[str]) -> list[Signal]:
+    text = f"{item.headline} {item.quote}"
+    found: list[Signal] = []
+    for match in STARTED_OVER_RE.finditer(text):
+        starter = _resolve(match.group(1), roster)
+        benched = _resolve(match.group(2), roster)
+        if starter:
+            found.append(
+                _signal(starter, item.team, "minutes_up", f"{starter} started over {match.group(2)}")
+            )
+        if benched and not (starter and names_match(starter, benched)):
+            found.append(
+                _signal(
+                    benched,
+                    item.team,
+                    "minutes_down",
+                    f"{benched} lost the start to {match.group(1)}",
+                )
+            )
+    return found
+
+
+def _preferred_lineup(item: NewsItem, roster: list[str]) -> list[Signal]:
+    text = f"{item.headline} {item.quote}"
+    found: list[Signal] = []
+    for match in LINEUP_WITH_RE.finditer(text):
+        player = _resolve(match.group(1), roster)
+        if not player:
+            continue
+        found.append(
+            _signal(player, item.team, "minutes_up", f"{player} is in the preferred lineup")
+        )
+    return found
 
 
 def _gainers(
