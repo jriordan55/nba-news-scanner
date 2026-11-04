@@ -38,6 +38,25 @@ jobs:
         if: steps.gate.outputs.run == 'true'
         run: pip install -r requirements.txt
 
+      - name: Restore Full Court Press sign-in
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: data/fcp_session.json
+          key: fcp-session-${{ github.run_id }}
+          restore-keys: |
+            fcp-session-
+
+      - name: Seed sign-in when this runner has none
+        if: steps.gate.outputs.run == 'true'
+        env:
+          FCP_SESSION: ${{ secrets.FCP_SESSION }}
+        run: |
+          if [ ! -f data/fcp_session.json ] && [ -n "$FCP_SESSION" ]; then
+            mkdir -p data
+            printf '%s' "$FCP_SESSION" > data/fcp_session.json
+          fi
+
       - name: Watch the feed
         if: steps.gate.outputs.run == 'true'
         env:
@@ -103,3 +122,11 @@ jobs:
           done
           wait "$pid" || true
           save_state || true
+
+      - name: Keep the sign-in for the next run
+        if: always() && steps.gate.outputs.run == 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: data/fcp_session.json
+          key: fcp-session-${{ github.run_id }}

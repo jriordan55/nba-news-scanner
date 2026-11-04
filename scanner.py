@@ -112,6 +112,7 @@ def run(config, store: Store, once: bool) -> None:
 
 
 def cycle(config, store, odds, alerter, beneficiaries, history, noted: set[str]) -> None:
+    attach_fcp_session(odds.session, config.data_dir)
     session = odds.session
     items: list[NewsItem] = []
     for url in FEED_URLS:
