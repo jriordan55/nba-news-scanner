@@ -40,6 +40,19 @@ HIGH_MINUTES_RE = re.compile(
     r"super high minutes|high minutes|\d{2} minutes",
     re.IGNORECASE,
 )
+# A cap that is coming off is more minutes, not a lighter load.
+LIFTED_RE = re.compile(
+    r"without (?:a |the |his |her )?(?:\d+[-\s])?minutes? (?:limit|cap|restriction)|"
+    r"(?:will not|won'?t|not) be on (?:a |an )?(?:\d+[-\s])?minutes? (?:limit|cap|restriction)|"
+    r"not (?:on|under) (?:a |an )?(?:\d+[-\s])?minutes? (?:limit|cap|restriction)|"
+    r"(?:off of|off) (?:a |the |his |her )?(?:\d+[-\s])?minutes? (?:limit|cap|restriction)|"
+    r"coming off (?:a |the |his |her )?(?:\d+[-\s])?minutes? (?:limit|cap|restriction)|"
+    r"free of (?:a |the |his |her )?(?:\d+[-\s])?minutes? (?:limit|cap|restriction)|"
+    r"minutes? (?:limit|cap|restriction) (?:is |was |has been |gets )?(?:lifted|removed|gone|over|done)|"
+    r"(?:lifted|removed|dropped) (?:the |his |her )?(?:\d+[-\s])?minutes? (?:limit|cap|restriction)|"
+    r"unlimited (?:playing time|minutes|play)",
+    re.IGNORECASE,
+)
 NEGATION_RE = re.compile(
     r"not going to|won'?t|will not|don'?t think|fewer|less|lighter|lower",
     re.IGNORECASE,
@@ -139,6 +152,8 @@ def classify(evidence: str) -> str | None:
         return None
     if OUT_RE.search(evidence):
         return "out"
+    if LIFTED_RE.search(evidence) and not UNDECIDED_RE.search(evidence):
+        return "minutes_up"
     if _lighter_minutes(evidence) and not UNDECIDED_RE.search(evidence):
         return "minutes_down"
     if UP_RE.search(evidence) and not UNDECIDED_RE.search(evidence):
@@ -310,6 +325,8 @@ def _mapped(beneficiaries: dict[str, list[str]], player: str) -> list[str]:
 
 
 def _lighter_minutes(evidence: str) -> bool:
+    if LIFTED_RE.search(evidence):
+        return False
     if LIMIT_RE.search(evidence):
         return True
     return bool(HIGH_MINUTES_RE.search(evidence) and NEGATION_RE.search(evidence))

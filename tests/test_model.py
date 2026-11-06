@@ -49,6 +49,27 @@ class ModelTests(unittest.TestCase):
         self.assertIn("player_points", signals[0].markets)
         self.assertNotIn("player_assists", signals[0].markets)
 
+    def test_a_lifted_minutes_cap_is_an_over(self):
+        item = card(
+            team="DAL",
+            players=["Morez Johnson Jr."],
+            headline="Morez Johnson Jr. plays without the 17 minute cap for the first time tonight.",
+            quote="tonight is the first night Morez Johnson will not be on a 17 minutes restriction",
+        )
+        signals = interpret(item)
+        self.assertEqual([signal.side for signal in signals], ["Over"])
+        self.assertNotIn("lighter load", signals[0].reason)
+
+    def test_still_on_a_minutes_restriction_is_an_under(self):
+        item = card(
+            team="DAL",
+            players=["Morez Johnson Jr."],
+            headline="Johnson is still on a minutes restriction.",
+            quote="Morez Johnson Jr. has made big plays while on a minutes restriction.",
+        )
+        signals = interpret(item)
+        self.assertEqual([signal.side for signal in signals], ["Under"])
+
     def test_lighter_minutes_is_an_under(self):
         item = card(
             headline="Lillard expects a lighter minutes load because of Portland's guard depth.",
