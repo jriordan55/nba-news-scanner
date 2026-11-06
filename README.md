@@ -40,13 +40,11 @@ Some cards on the site are behind the free-account wall. The scanner only reads 
 
 ## CLV file
 
-`data/clv.csv` has one row per bet.
+`data/clv.csv` has one row per bet and is rewritten as the scanner runs.
 
-- `alert_line` / `alert_price` are saved when the alert fires.
-- `latest_line` / `latest_price` move until tip-off.
-- `close_line` / `close_price` freeze at tip-off. `close_status` becomes `closed`, or `pulled` if the book takes the prop down. A pulled row uses the last price seen.
-- `line_clv` is in points. Positive means your number was better than the comparison line. An over of 24.5 that closes 26.5 is `+2.00`. An under of 28.5 that closes 27.5 is `+1.00`.
-- `price_clv_pct_points` is the close's implied probability minus the alert's, in percentage points. Positive means your side got shorter.
-- `clv_basis` is `latest` before tip-off and `close` after.
+- `line at news` and `odds at news` are saved when the alert fires. `time of odds` is that moment. `time of news` is when the card was posted.
+- `closing line` and `closing price` freeze at tip-off. If the book pulls the prop, the close is the last price seen.
+- `result` is the box score. `hit/loss` is graded on the line at the news. A player who does not play is `void`.
+- `CLV` is in points against the closing line. Positive means your number beat the close. An over of 24.5 that closes 26.5 is `+2.00`. An under of 28.5 that closes 27.5 is `+1.00`.
 
 PrizePicks often posts both sides at -137, so the line is the number that usually moves.

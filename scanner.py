@@ -29,6 +29,7 @@ from matchup import matchup_for
 from model import Signal, interpret
 from names import names_match, norm
 from odds_client import Board, Leg, OddsClient, OddsError, choose_main_line
+from results import grade_settled
 from store import Store
 
 log = logging.getLogger("nba-scanner")
@@ -96,6 +97,7 @@ def run(config, store: Store, once: bool) -> None:
         try:
             cycle(config, store, odds, alerter, beneficiaries, history, noted)
             refresh_closes(store, odds)
+            grade_settled(store, odds.session)
         except Exception:
             log.exception("scan cycle failed")
         if once or (deadline is not None and time.time() >= deadline):

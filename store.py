@@ -8,7 +8,8 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from clv import line_clv, price_clv_points
+from clv import line_clv
+from results import outcome
 from feed import NewsItem
 from model import Signal
 from names import names_match, norm
@@ -17,32 +18,19 @@ from odds_client import Leg
 log = logging.getLogger("nba-scanner")
 
 CSV_COLUMNS = [
-    "fired_at_utc",
-    "team",
     "player",
-    "market",
+    "news",
     "side",
-    "book",
-    "alert_line",
-    "alert_price",
-    "latest_line",
-    "latest_price",
-    "close_line",
-    "close_price",
-    "close_status",
-    "line_clv",
-    "price_clv_pct_points",
-    "clv_basis",
-    "game",
-    "game_start_utc",
-    "confidence",
-    "reason",
-    "headline",
-    "news_url",
-    "news_time_utc",
-    "close_at_utc",
-    "event_id",
-    "bet_id",
+    "market",
+    "line at news",
+    "odds at news",
+    "time of odds",
+    "time of news",
+    "closing line",
+    "closing price",
+    "result",
+    "hit/loss",
+    "CLV",
 ]
 
 
@@ -109,6 +97,7 @@ class Store:
             );
             """
         )
+        self._ensure_result_columns()
         self.conn.commit()
 
     def seen(self, news_id: str) -> bool:
@@ -228,6 +217,24 @@ class Store:
         self.conn.commit()
         self.export_csv()
 
+    def pending_grades(self) -> list[sqlite3.Row]:
+        return list(
+            self.conn.execute(
+                "SELECT * FROM bets WHERE graded = 0 ORDER BY game_start"
+            ).fetchall()
+        )
+
+    def grade_bet(self, bet_id: str, played: int | None, actual: float | None) -> None:
+        self.conn.execute(
+            """
+            UPDATE bets
+            SET graded = 1, played = ?, actual = ?
+            WHERE bet_id = ?
+            """,
+            (played, actual, bet_id),
+        )
+        self.conn.commit()
+
     def open_bets(self) -> list[sqlite3.Row]:
         return list(
             self.conn.execute(
@@ -306,56 +313,44 @@ class Store:
             )
         return lines
 
+    def _ensure_result_columns(self) -> None:
+        have = {row[1] for row in self.conn.execute("PRAGMA table_info(bets)")}
+        if "graded" not in have:
+            self.conn.execute("ALTER TABLE bets ADD COLUMN graded INTEGER NOT NULL DEFAULT 0")
+        if "played" not in have:
+            self.conn.execute("ALTER TABLE bets ADD COLUMN played INTEGER")
+        if "actual" not in have:
+            self.conn.execute("ALTER TABLE bets ADD COLUMN actual REAL")
+
 
 def _csv_row(row: sqlite3.Row) -> dict[str, str]:
-    basis, line_value, price_value = _clv(row)
+    if not row["graded"]:
+        result, hit = "", ""
+    elif row["played"] is None:
+        result, hit = "no box", ""
+    else:
+        result, hit = outcome(row["side"], row["alert_line"], bool(row["played"]), row["actual"])
     return {
-        "fired_at_utc": row["fired_at"] or "",
-        "team": row["team"] or "",
         "player": row["player"] or "",
-        "market": row["market"] or "",
+        "news": row["headline"] or "",
         "side": row["side"] or "",
-        "book": row["book"] or "",
-        "alert_line": _num(row["alert_line"]),
-        "alert_price": _int(row["alert_price"]),
-        "latest_line": _num(row["latest_line"]),
-        "latest_price": _int(row["latest_price"]),
-        "close_line": _num(row["close_line"]),
-        "close_price": _int(row["close_price"]),
-        "close_status": row["close_status"] or "",
-        "line_clv": line_value,
-        "price_clv_pct_points": price_value,
-        "clv_basis": basis,
-        "game": row["game"] or "",
-        "game_start_utc": row["game_start"] or "",
-        "confidence": _num(row["confidence"]),
-        "reason": row["reason"] or "",
-        "headline": row["headline"] or "",
-        "news_url": row["news_url"] or "",
-        "news_time_utc": row["news_time"] or "",
-        "close_at_utc": row["close_at"] or "",
-        "event_id": row["event_id"] or "",
-        "bet_id": row["bet_id"] or "",
+        "market": row["market"] or "",
+        "line at news": _num(row["alert_line"]),
+        "odds at news": _int(row["alert_price"]),
+        "time of odds": row["fired_at"] or "",
+        "time of news": row["news_time"] or "",
+        "closing line": _num(row["close_line"]),
+        "closing price": _int(row["close_price"]),
+        "result": result,
+        "hit/loss": hit,
+        "CLV": _clv(row),
     }
 
 
-def _clv(row: sqlite3.Row) -> tuple[str, str, str]:
-    status = row["close_status"]
-    if status in ("closed", "pulled") and row["close_line"] is not None and row["close_price"] is not None:
-        other_line, other_price, basis = row["close_line"], row["close_price"], "close"
-    elif status == "open" and (
-        row["latest_line"] != row["alert_line"] or row["latest_price"] != row["alert_price"]
-    ):
-        other_line, other_price, basis = row["latest_line"], row["latest_price"], "latest"
-    else:
-        return ("", "", "") if status == "open" else ("close", "", "")
-    if other_line is None or other_price is None:
-        return basis, "", ""
-    return (
-        basis,
-        f"{line_clv(row['side'], row['alert_line'], other_line):.2f}",
-        f"{price_clv_points(row['alert_price'], other_price):.2f}",
-    )
+def _clv(row: sqlite3.Row) -> str:
+    if row["close_line"] is None or row["alert_line"] is None or not row["side"]:
+        return ""
+    return f"{line_clv(row['side'], row['alert_line'], row['close_line']):+.2f}"
 
 
 def _bet_id(url: str, player: str, market: str, side: str) -> str:

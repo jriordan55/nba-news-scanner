@@ -60,14 +60,22 @@ class StoreTests(unittest.TestCase):
             rows = list(csv.DictReader(handle))
         self.assertEqual(len(rows), 1)
         row = rows[0]
-        self.assertEqual(row["alert_line"], "28.5")
-        self.assertEqual(row["alert_price"], "-137")
-        self.assertEqual(row["close_line"], "27.5")
-        self.assertEqual(row["close_price"], "-150")
-        self.assertEqual(row["close_status"], "closed")
-        self.assertEqual(row["clv_basis"], "close")
-        self.assertEqual(row["line_clv"], "1.00")
-        self.assertTrue(float(row["price_clv_pct_points"]) > 0)
+        self.assertEqual(row["player"], "Damian Lillard")
+        self.assertEqual(row["news"], "Lillard expects a lighter minutes load.")
+        self.assertEqual(row["side"], "Under")
+        self.assertEqual(row["market"], "Points")
+        self.assertEqual(row["line at news"], "28.5")
+        self.assertEqual(row["odds at news"], "-137")
+        self.assertEqual(row["closing line"], "27.5")
+        self.assertEqual(row["closing price"], "-150")
+        self.assertEqual(row["CLV"], "+1.00")
+        self.assertEqual(row["result"], "")
+        store.grade_bet(bet_id, 1, 22)
+        store.export_csv()
+        with store.csv_path.open(encoding="utf-8-sig", newline="") as handle:
+            graded = list(csv.DictReader(handle))[0]
+        self.assertEqual(graded["result"], "22")
+        self.assertEqual(graded["hit/loss"], "hit")
 
 
 if __name__ == "__main__":
