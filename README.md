@@ -1,6 +1,6 @@
 # NBA news scanner
 
-Watches the public [Full Court Press](https://fcp.news/?all=1) feed around the clock. When a card is about minutes or a role, it prices an over or under at PrizePicks through The Odds API and sends it to Discord or Telegram. The alert also includes what that opponent has allowed to the player's position over the last 15 games. The price at alert time and the price at tip-off are kept in `data/clv.csv`.
+Watches the public [Full Court Press](https://fcp.news/?all=1) feed around the clock. When a card is about minutes or a role, it prices an over or under at DraftKings Pick6 through The Odds API and sends it to Discord or Telegram. The alert also includes what that opponent has allowed to the player's position over the last 15 games. The price at alert time and the price at tip-off are kept in `data/clv.csv`.
 
 ## Run it
 
@@ -20,7 +20,7 @@ Put either a Discord webhook URL or a Telegram bot token and chat id in `.env`, 
 
 ## What gets a bet
 
-PrizePicks voids a prop when the player does not play, so a confirmed absence is not an under. The scanner looks for the teammate the post names as the one getting those minutes, and bets that player over. A player who is still playing on a lighter load is an under. A bigger role, a start, or more of the ball is an over.
+A prop is void when the player does not play, so a confirmed absence is not an under. The scanner looks for the teammate the post names as the one getting those minutes, and bets that player over. A player who is still playing on a lighter load is an under. A bigger role, a start, or more of the ball is an over.
 
 Questionable tags, undecided rotations, and contract notes are ignored.
 
@@ -47,4 +47,4 @@ Some cards on the site are behind the free-account wall. The scanner only reads 
 - `result` is the box score. `hit/loss` is graded on the line at the news. A player who does not play is `void`.
 - `CLV` is in points against the closing line. Positive means your number beat the close. An over of 24.5 that closes 26.5 is `+2.00`. An under of 28.5 that closes 27.5 is `+1.00`.
 
-PrizePicks often posts both sides at -137, so the line is the number that usually moves.
+Pick6 posts the standard two-way line. The line is the number that usually moves.

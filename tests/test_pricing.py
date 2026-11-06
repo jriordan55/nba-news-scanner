@@ -5,7 +5,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from clv import line_clv, price_clv_points
-from odds_client import Offer, choose_main_line
+from odds_client import Offer, book_source, choose_main_line
 
 
 def offer(side, line, price, market="player_points", player="Damian Lillard"):
@@ -24,6 +24,10 @@ class PricingTests(unittest.TestCase):
         self.assertIsNotNone(chosen)
         self.assertEqual(chosen.line, 25.5)
         self.assertEqual(chosen.price, -137)
+
+    def test_pick6_is_the_book(self):
+        self.assertEqual(book_source("pick6"), ("us_dfs", "pick6"))
+        self.assertEqual(book_source("retail"), ("us", "draftkings"))
 
     def test_line_clv_direction(self):
         self.assertEqual(line_clv("Over", 24.5, 26.5), 2.0)

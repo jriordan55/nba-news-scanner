@@ -240,7 +240,7 @@ def handle_item(config, store, odds, alerter, beneficiaries, history, noted, ite
         for market in signal.markets:
             if market not in markets:
                 markets.append(market)
-    board = odds.board(event, markets, prefer="prizepicks")
+    board = odds.board(event, markets, prefer="pick6")
     legs = _price(priced, board, prefer_retail=False)
     missing = [signal for signal in priced if not _covered(signal, legs)]
     if missing:
@@ -251,7 +251,7 @@ def handle_item(config, store, odds, alerter, beneficiaries, history, noted, ite
                     retail_markets.append(market)
         retail = odds.board(event, retail_markets, prefer="retail")
         legs.extend(_price(missing, retail, prefer_retail=True))
-        legs = _prefer_prizepicks(legs)
+        legs = _prefer_pick6(legs)
     legs = [
         leg
         for leg in legs
@@ -384,12 +384,12 @@ def _covered(signal: Signal, legs: list[Leg]) -> bool:
     return any(names_match(signal.player, leg.player) for leg in legs)
 
 
-def _prefer_prizepicks(legs: list[Leg]) -> list[Leg]:
+def _prefer_pick6(legs: list[Leg]) -> list[Leg]:
     chosen: dict[tuple[str, str, str], Leg] = {}
     for leg in legs:
         key = (norm(leg.player), leg.market, leg.side)
         current = chosen.get(key)
-        if current is None or (leg.book_key == "prizepicks" and current.book_key != "prizepicks"):
+        if current is None or (leg.book_key == "pick6" and current.book_key != "pick6"):
             chosen[key] = leg
     return list(chosen.values())
 

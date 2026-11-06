@@ -111,7 +111,7 @@ class OddsClient:
                 chosen = event
         return chosen
 
-    def board(self, event: dict, markets: list[str], prefer: str = "prizepicks", ttl: float = 120) -> Board:
+    def board(self, event: dict, markets: list[str], prefer: str = "pick6", ttl: float = 120) -> Board:
         """Price one game. Caller must already know which players are being alerted."""
         if time.time() < self.disabled_until:
             raise OddsError("odds api paused after an auth failure")
@@ -119,10 +119,7 @@ class OddsClient:
         if not wanted:
             raise OddsError("no markets to price")
         event_id = str(event["id"])
-        if prefer == "prizepicks":
-            region, books = "us_dfs", "prizepicks"
-        else:
-            region, books = "us", "draftkings"
+        region, books = book_source(prefer)
         key = (event_id, region, ",".join(wanted))
         cached = self._boards.get(key)
         if cached and time.time() - cached[0] < ttl:
@@ -217,10 +214,18 @@ def parse_offers(payload: dict) -> list[Offer]:
     return offers
 
 
-def choose_main_line(offers: list[Offer], player: str, market: str, side: str) -> Offer | None:
-    """Prefer the two-way line closest to standard PrizePicks juice.
+def book_source(prefer: str) -> tuple[str, str]:
+    """DraftKings Pick6 is the book. The sportsbook is only the fallback."""
+    if prefer == "pick6":
+        return "us_dfs", "pick6"
+    if prefer == "prizepicks":
+        return "us_dfs", "prizepicks"
+    return "us", "draftkings"
 
-    Goblin and demon ladders show up as extra points with lopsided prices.
+
+def choose_main_line(offers: list[Offer], player: str, market: str, side: str) -> Offer | None:
+    """Prefer the two-way line, not a boosted ladder.
+
     The main line is the point where Over and Under are both posted and the
     two prices sit nearest each other, then nearest -137.
     """
