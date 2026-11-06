@@ -20,6 +20,7 @@ log = logging.getLogger("nba-scanner")
 CSV_COLUMNS = [
     "player",
     "news",
+    "category",
     "side",
     "market",
     "book",
@@ -185,8 +186,8 @@ class Store:
                     bet_id, fired_at, news_time, team, player, market, side, book, book_key,
                     game, home, away, game_start, event_id, alert_line, alert_price,
                     latest_line, latest_price, latest_at, close_status, confidence,
-                    reason, headline, news_url, news_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)
+                    reason, headline, news_url, news_id, category
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     bet_id,
@@ -213,6 +214,7 @@ class Store:
                     item.headline,
                     item.url,
                     item.id,
+                    item.category,
                 ),
             )
         self.conn.commit()
@@ -322,6 +324,8 @@ class Store:
             self.conn.execute("ALTER TABLE bets ADD COLUMN played INTEGER")
         if "actual" not in have:
             self.conn.execute("ALTER TABLE bets ADD COLUMN actual REAL")
+        if "category" not in have:
+            self.conn.execute("ALTER TABLE bets ADD COLUMN category TEXT")
 
 
 def _csv_row(row: sqlite3.Row) -> dict[str, str]:
@@ -334,6 +338,7 @@ def _csv_row(row: sqlite3.Row) -> dict[str, str]:
     return {
         "player": row["player"] or "",
         "news": row["headline"] or "",
+        "category": row["category"] or "",
         "side": row["side"] or "",
         "market": row["market"] or "",
         "book": row["book"] or "",

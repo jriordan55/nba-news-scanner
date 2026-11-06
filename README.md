@@ -20,7 +20,7 @@ Put either a Discord webhook URL or a Telegram bot token and chat id in `.env`, 
 
 ## What gets a bet
 
-A prop is void when the player does not play, so a confirmed absence is not an under. The scanner looks for the teammate the post names as the one getting those minutes, and bets that player over. A player who is still playing on a lighter load is an under. A bigger role, a start, or more of the ball is an over.
+Only Development, Minutes & Usage, Gameplan, and Role & Rotation are bet. A prop is void when the player does not play, so a confirmed absence is not an under. The scanner looks for the teammate the post names as the one getting those minutes, and bets that player over. A player who is still playing on a lighter load is an under. A bigger role, a start, or more of the ball is an over.
 
 Questionable tags, undecided rotations, and contract notes are ignored.
 

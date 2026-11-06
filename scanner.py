@@ -20,7 +20,7 @@ from pathlib import Path
 import requests
 
 from alerts import Alerter
-from config import FEED_URLS, MARKET_LABELS, ROOT, load_config
+from config import FEED_URLS, MARKET_LABELS, ROOT, TRACKED_CATEGORIES, load_config
 from fcp_session import attach as attach_fcp_session
 from history import load_history
 from feed import NewsItem, fetch_feed
@@ -196,6 +196,9 @@ def _stored_injury(row) -> Injury:
 
 
 def handle_item(config, store, odds, alerter, beneficiaries, history, noted, item: NewsItem, now: datetime) -> None:
+    if item.category not in TRACKED_CATEGORIES:
+        store.mark_seen(item, alerted=False)
+        return
     if item.paywalled:
         return
     if not item.url:

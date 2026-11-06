@@ -9,13 +9,20 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 
 FEED_URLS = (
-    "https://fcp.news/?all=1",
-    "https://fcp.news/?all=1&cat=availability_status",
+    "https://fcp.news/?all=1&cat=development",
     "https://fcp.news/?all=1&cat=minutes_usage",
+    "https://fcp.news/?all=1&cat=gameplan",
     "https://fcp.news/?all=1&cat=role_rotation",
-    "https://fcp.news/?all=1&cat=health_progress",
     "https://fcp.news/coachspeak",
 )
+
+# Coachspeak is included because its cards are tagged with these same categories.
+TRACKED_CATEGORIES = frozenset({
+    "Development",
+    "Minutes & Usage",
+    "Gameplan",
+    "Role & Rotation",
+})
 
 # Full names as The Odds API prints them. Clippers have shown up both ways.
 TEAMS: dict[str, tuple[str, ...]] = {

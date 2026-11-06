@@ -62,6 +62,7 @@ class StoreTests(unittest.TestCase):
         row = rows[0]
         self.assertEqual(row["player"], "Damian Lillard")
         self.assertEqual(row["news"], "Lillard expects a lighter minutes load.")
+        self.assertEqual(row["category"], "Minutes & Usage")
         self.assertEqual(row["side"], "Under")
         self.assertEqual(row["market"], "Points")
         self.assertEqual(row["line at news"], "28.5")
