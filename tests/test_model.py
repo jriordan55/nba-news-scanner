@@ -60,6 +60,29 @@ class ModelTests(unittest.TestCase):
         self.assertEqual([signal.side for signal in signals], ["Over"])
         self.assertNotIn("lighter load", signals[0].reason)
 
+    def test_no_minutes_restriction_is_an_over(self):
+        item = card(
+            team="HOU",
+            players=["Fred VanVleet", "Steven Adams"],
+            headline="VanVleet and Adams face no minutes restriction and Houston will be smart on back-to-backs.",
+            quote="Fred VanVleet and Steven Adams have no minutes restrictions.",
+        )
+        signals = interpret(item)
+        self.assertEqual({signal.player: signal.side for signal in signals}, {
+            "Fred VanVleet": "Over",
+            "Steven Adams": "Over",
+        })
+
+    def test_no_longer_on_a_limit_is_an_over(self):
+        item = card(
+            team="WAS",
+            players=["AJ Dybantsa"],
+            headline="Dybantsa is free of his minutes restriction and can play as much as the game needs.",
+            quote="AJ Dybantsa will no longer be on a minutes limit.",
+        )
+        signals = interpret(item)
+        self.assertEqual([signal.side for signal in signals], ["Over"])
+
     def test_still_on_a_minutes_restriction_is_an_under(self):
         item = card(
             team="DAL",

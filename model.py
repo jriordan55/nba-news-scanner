@@ -43,6 +43,8 @@ HIGH_MINUTES_RE = re.compile(
 # A cap that is coming off is more minutes, not a lighter load.
 LIFTED_RE = re.compile(
     r"without (?:a |the |his |her )?(?:\d+[-\s])?minutes? (?:limit|cap|restriction)|"
+    r"no minutes? restrictions?|"
+    r"no longer (?:be )?on (?:a |an )?(?:\d+[-\s])?minutes? (?:limit|cap|restriction)|"
     r"(?:will not|won'?t|not) be on (?:a |an )?(?:\d+[-\s])?minutes? (?:limit|cap|restriction)|"
     r"not (?:on|under) (?:a |an )?(?:\d+[-\s])?minutes? (?:limit|cap|restriction)|"
     r"(?:off of|off) (?:a |the |his |her )?(?:\d+[-\s])?minutes? (?:limit|cap|restriction)|"
