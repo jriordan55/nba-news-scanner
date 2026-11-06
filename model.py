@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from config import TRACKED_CATEGORIES
 from feed import NewsItem
 from names import mentions_player, names_match, norm
 
@@ -33,7 +34,11 @@ LIMIT_RE = re.compile(
     r"fewer minutes|reduced minutes|lower minutes|"
     r"minutes? (?:will|to) (?:be )?(?:cut|reduced|capped)|"
     r"not going to be playing \d+|won'?t be playing \d+|won'?t play \d+|"
-    r"smaller role|reduced role|less run|com(?:e|ing) off the bench",
+    r"smaller role|reduced role|less run|com(?:e|ing) off the bench|"
+    r"not starting|aren'?t starting|isn'?t starting|won'?t start|will not start|"
+    r"second unit|fewer touches|less touches|"
+    r"(?:be|being|get) rested|will rest|eased in|ease (?:their|his|her)|"
+    r"pace himself|pace herself",
     re.IGNORECASE,
 )
 HIGH_MINUTES_RE = re.compile(
@@ -65,8 +70,15 @@ UP_RE = re.compile(
     r"increased usage|more usage|usage bump|usage will (?:rise|increase)|"
     r"ball in his hands|ball in their hands|have the ball a lot|"
     r"will start(?! to\b)|getting the start|starting tonight|starting tomorrow|"
+    r"certain to start|expected to start|expects to start|set to start|slated to start|"
+    r"projected to start|will be starting|is starting(?!\s+to\b)|"
     r"moved into the starting|in his place|in her place|start in place|"
     r"draws the start|gets the start|bigger workload|into the starting lineup|"
+    r"starting lineup|starting group|first unit|with the starters|"
+    r"plays a lot|heavy minutes|chunk of minutes|minutes (?:will |could |to )?double|"
+    r"logging more minutes|closing the game|in the closing lineup|"
+    r"crash(?:ing)? the glass|look for (?:his|her|their) own scoring|stay aggressive|"
+    r"gets? involved|more involved|pick-and-roll|pick and roll|initiating\b|"
     r"controlling the offense|"
     r"are (?:all )?back\b(?!\s+to\b)|cleared to play|not on the injury report|"
     r"brought the ball up|brings the ball up|bring the ball up|"
@@ -84,11 +96,18 @@ STARTED_OVER_RE = re.compile(rf"({_NAME})\s+started over\s+({_NAME})")
 LINEUP_WITH_RE = re.compile(r"lineup with\s+([A-Z][\w'’.-]+)")
 ASSIST_RE = re.compile(
     r"assist|facilitat|playmak|ball in his hands|ball in their hands|"
-    r"have the ball|controlling the offense",
+    r"have the ball|controlling the offense|initiating|pick-and-roll|pick and roll",
     re.IGNORECASE,
 )
-REBOUND_RE = re.compile(r"rebound", re.IGNORECASE)
+REBOUND_RE = re.compile(r"rebound|glass", re.IGNORECASE)
 THREES_RE = re.compile(r"three|3-point|from deep", re.IGNORECASE)
+ROLE_LANGUAGE_RE = re.compile(
+    r"minutes|start(?:ing|s|ed)?\b|lineup|rotation|usage|touches|"
+    r"clos(?:e|ing)|bench|second unit|first unit|involved|attack|"
+    r"scoring|rebound|glass|assist|pick and roll|pick-and-roll|"
+    r"offense|role|starter|shoot|defen|guarding|matchup|\bpace\b|can play",
+    re.IGNORECASE,
+)
 PROPER_NAME_RE = re.compile(r"[A-Z][a-z]{2,}(?:\s+[A-Z][a-zA-Z'’.-]+){0,2}\b")
 
 POINTS = "player_points"
@@ -121,7 +140,7 @@ def interpret(
     signals: list[Signal] = []
     for player in item.players:
         evidence = evidence_for(player, item, roster)
-        kind = classify(evidence)
+        kind = classify(evidence) or category_bet(item.category, evidence)
         if kind is None:
             continue
         signals.append(_signal(player, item.team, kind, evidence))
@@ -137,16 +156,38 @@ def interpret(
 
 
 def evidence_for(player: str, item: NewsItem, roster: list[str]) -> str:
-    single = len(item.players) == 1
+    # On a role, minutes, gameplan, or development card, a sentence that
+    # names nobody still belongs to the players tagged on that card.
+    shared = len(item.players) == 1 or item.category in TRACKED_CATEGORIES
     chunks: list[str] = []
-    if single or mentions_player(item.headline, player, roster):
-        chunks.append(item.headline)
+    if shared or mentions_player(item.headline, player, roster):
+        if mentions_player(item.headline, player, roster) or not _about_someone_else(item.headline, player, roster):
+            chunks.append(item.headline)
     for sentence in _sentences(item.quote):
         if mentions_player(sentence, player, roster):
             chunks.append(sentence)
-        elif single and not _about_someone_else(sentence, player, roster):
+        elif shared and not _about_someone_else(sentence, player, roster):
             chunks.append(sentence)
     return " ".join(chunks).strip()
+
+
+def category_bet(category: str, evidence: str) -> str | None:
+    """These four categories are the bet feed, so a role mention is enough."""
+    if category not in TRACKED_CATEGORIES or not evidence:
+        return None
+    if (
+        UNDECIDED_RE.search(evidence)
+        or QUESTIONABLE_RE.search(evidence)
+        or DOUBTFUL_RE.search(evidence)
+        or OUT_RE.search(evidence)
+        or re.search(r"extension|contract", evidence, re.IGNORECASE)
+    ):
+        return None
+    if _lighter_minutes(evidence):
+        return "minutes_down"
+    if ROLE_LANGUAGE_RE.search(evidence):
+        return "minutes_up"
+    return None
 
 
 def classify(evidence: str) -> str | None:

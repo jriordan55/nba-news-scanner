@@ -104,6 +104,47 @@ class ModelTests(unittest.TestCase):
         self.assertIn("player_points", signals[0].markets)
         self.assertIn("player_points_rebounds_assists", signals[0].markets)
 
+    def test_a_start_and_a_heavy_minute_load_are_overs(self):
+        start = card(
+            team="POR",
+            players=["Donovan Clingan"],
+            headline="Clingan is almost certain to start while Williams plays a lot with the smaller lineups.",
+            quote="Donovan Clingan is almost certain to start.",
+        )
+        heavy = card(
+            team="IND",
+            players=["Tyrese Haliburton"],
+            headline="Haliburton is set for a good chunk of minutes in this game.",
+            quote="Tyrese Haliburton is set for a good chunk of minutes.",
+        )
+        self.assertEqual([signal.side for signal in interpret(start)], ["Over"])
+        self.assertEqual([signal.side for signal in interpret(heavy)], ["Over"])
+
+    def test_not_starting_or_fewer_touches_is_an_under(self):
+        bench = card(
+            team="POR",
+            players=["Carlson"],
+            headline="Carlson and Potter are not starting and can play backup four or five.",
+            quote="Carlson is not starting.",
+        )
+        touches = card(
+            team="OKC",
+            players=["Jalen Williams"],
+            headline="Williams is getting fewer touches than before in his current role but is doing it well.",
+            quote="Jalen Williams is getting fewer touches.",
+        )
+        self.assertEqual([signal.side for signal in interpret(bench)], ["Under"])
+        self.assertEqual([signal.side for signal in interpret(touches)], ["Under"])
+
+    def test_practice_notes_are_not_a_bet(self):
+        item = card(
+            team="NOP",
+            players=["Yves Missi"],
+            headline="Missi was special in practice today.",
+            quote="Yves Missi was special in practice today.",
+        )
+        self.assertEqual(interpret(item), [])
+
     def test_bigger_role_is_an_over_and_picks_up_playmaking(self):
         item = card(
             team="MIL",
