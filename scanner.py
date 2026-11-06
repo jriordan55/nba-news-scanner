@@ -109,7 +109,9 @@ def run(config, store: Store, once: bool) -> None:
                 store.count_seen(),
                 len(store.open_bets()),
             )
-        time.sleep(max(1.0, config.poll_seconds - (time.time() - started)))
+        remaining = config.poll_seconds - (time.time() - started)
+        if remaining > 0:
+            time.sleep(remaining)
 
 
 def cycle(config, store, odds, alerter, beneficiaries, history, noted: set[str]) -> None:
@@ -121,7 +123,6 @@ def cycle(config, store, odds, alerter, beneficiaries, history, noted: set[str])
             items.extend(fetch_feed(session, url))
         except requests.RequestException as exc:
             log.warning("feed read failed for %s: %s", url, exc)
-        time.sleep(0.4)
     seen_ids: set[str] = set()
     now = datetime.now(timezone.utc)
     for item in items:

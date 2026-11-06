@@ -3,7 +3,7 @@ name: scan
 on:
   schedule:
     # GitHub's timer often starts late, and a missed slot is not replayed.
-    # A job that is already running checks the feed every 20 seconds. A new
+    # A job that is already running checks the feed every second. A new
     # job is queued every 2 hours and takes over before the 6-hour limit.
     - cron: "7 */2 * * *"
   workflow_dispatch:
@@ -67,7 +67,7 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           LOOKBACK_HOURS: "12"
           MAX_TIP_HOURS: "96"
-          POLL_SECONDS: "20"
+          POLL_SECONDS: "1"
           RUN_FOR_SECONDS: "19200"
         run: |
           git config user.name "github-actions[bot]"

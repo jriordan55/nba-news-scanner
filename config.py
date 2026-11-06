@@ -104,7 +104,7 @@ def load_config() -> Config:
         discord_webhook=os.environ.get("DISCORD_WEBHOOK_URL", "").strip(),
         telegram_token=os.environ.get("TELEGRAM_BOT_TOKEN", "").strip(),
         telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID", "").strip(),
-        poll_seconds=_int_env("POLL_SECONDS", 20),
+        poll_seconds=_int_env("POLL_SECONDS", 1),
         lookback_hours=_int_env("LOOKBACK_HOURS", 12),
         max_tip_hours=_int_env("MAX_TIP_HOURS", 96),
         root=ROOT,
