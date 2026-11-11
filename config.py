@@ -16,6 +16,12 @@ FEED_URLS = (
     "https://fcp.news/coachspeak",
 )
 
+# Outs are posted here before the ESPN report updates. These are watches.
+FCP_OUT_URLS = (
+    "https://fcp.news/?all=1&cat=availability_status",
+    "https://fcp.news/?all=1&cat=health_progress",
+)
+
 # Coachspeak is included because its cards are tagged with these same categories.
 TRACKED_CATEGORIES = frozenset({
     "Development",

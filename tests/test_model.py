@@ -178,6 +178,26 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(sorted(signal.player for signal in signals), ["Dereck Lively II", "Santi Aldama"])
         self.assertTrue(all(signal.kind == "out" and signal.side is None for signal in signals))
 
+    def test_a_full_court_press_out_card_is_a_watch(self):
+        powell = card(
+            team="CHI",
+            players=["Norman Powell"],
+            category="",
+            headline="Powell out for second consecutive game.",
+            quote="Norman Powell will sit out a second straight game.",
+        )
+        signals = interpret(powell)
+        self.assertEqual([signal.kind for signal in signals], ["out"])
+        self.assertIsNone(signals[0].side)
+        playing = card(
+            team="NYK",
+            players=["Karl-Anthony Towns"],
+            category="",
+            headline="KAT cleared to play with calf.",
+            quote="Mike Brown said KAT (calf) will play.",
+        )
+        self.assertTrue(all(signal.kind != "out" for signal in interpret(playing)))
+
     def test_confirmed_out_is_not_an_under(self):
         item = card(
             team="OKC",

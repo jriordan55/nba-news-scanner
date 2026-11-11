@@ -18,7 +18,8 @@ OUT_RE = re.compile(
     r"\b(ruled out|will not play(?!\s+\d)|won'?t play(?!\s+\d)|will miss|going to miss|"
     r"sidelined|inactive|scratched|late scratch|out tonight|out tomorrow|"
     r"out for the(?: season| game| opener| year)?|"
-    r"remains? out|sits out|sitting out|done for the (?:night|game))\b"
+    r"remains? out|sits? out|sitting out|done for the (?:night|game)|"
+    r"out for (?:his |her |their |a )?(?:second|third|fourth|fifth|\d+|another|consecutive))\b"
     r"|\b(?:is|are)(?: already| still)? out\b(?! of (?:the )?rotation)",
     re.IGNORECASE,
 )

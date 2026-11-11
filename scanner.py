@@ -1,7 +1,7 @@
 """24/7 Full Court Press scanner.
 
-Reads https://fcp.news/?all=1 (and the minutes, role, injury, health,
-and coachspeak feeds). The Odds API is called only after a player or an affected
+Reads Full Court Press. Outs come from the availability and health cards.
+The Odds API is called only after a player or an affected
 teammate is ready to alert. The alert price is kept next to the closing
 price in data/clv.csv.
 """
@@ -21,10 +21,10 @@ from pathlib import Path
 import requests
 
 from alerts import Alerter
-from config import FEED_URLS, MARKET_LABELS, ROOT, TRACKED_CATEGORIES, load_config
+from config import FCP_OUT_URLS, FEED_URLS, MARKET_LABELS, ROOT, TRACKED_CATEGORIES, load_config
 from fcp_session import attach as attach_fcp_session
 from history import load_history
-from feed import NewsItem, fetch_feed
+from feed import USER_AGENT, NewsItem, fetch_feed, parse_html
 from injuries import Injury, events as injury_events, fetch_injuries, next_state, same_report
 from matchup import matchup_for
 from model import Signal, interpret
@@ -38,6 +38,7 @@ RETRY_UNPRICED = timedelta(hours=6)
 # Injuries are checked on their own. The news crawl can sit on share images
 # and odds calls, and an out cannot wait behind that.
 INJURY_POLL_SECONDS = 2
+ESPN_POLL_SECONDS = 30
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -172,24 +173,65 @@ def cycle(config, store, odds, alerter, beneficiaries, history, noted: set[str],
 
 
 def _injury_loop(config, stop: threading.Event, beneficiaries, history) -> None:
-    """Poll ESPN without waiting for the news crawl to finish."""
+    """Poll Full Court Press outs without waiting for the news crawl."""
     session = requests.Session()
     odds = OddsClient(config.odds_api_key, session)
     alerter = Alerter(config, session)
     store = Store(config.data_dir)
     noted: set[str] = set()
+    last_espn = 0.0
     try:
         while not stop.is_set():
             started = time.monotonic()
             try:
-                _scan_injuries(config, store, odds, alerter, beneficiaries, history, noted)
+                _scan_fcp_outs(config, store, odds, alerter, beneficiaries, history, noted)
             except Exception:
-                log.exception("injury scan failed")
+                log.exception("full court press injury scan failed")
+            if time.monotonic() - last_espn >= ESPN_POLL_SECONDS:
+                last_espn = time.monotonic()
+                try:
+                    _scan_injuries(config, store, odds, alerter, beneficiaries, history, noted)
+                except Exception:
+                    log.exception("injury scan failed")
             remaining = INJURY_POLL_SECONDS - (time.monotonic() - started)
             if remaining > 0:
                 stop.wait(remaining)
     finally:
         store.close()
+
+
+def _scan_fcp_outs(config, store, odds, alerter, beneficiaries, history, noted) -> None:
+    """Alert a Full Court Press out as soon as the card is on the page."""
+    session = odds.session
+    now = datetime.now(timezone.utc)
+    seen: set[str] = set()
+    for url in FCP_OUT_URLS:
+        try:
+            response = session.get(url, timeout=8, headers={"User-Agent": USER_AGENT})
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            log.warning("full court press out feed failed for %s: %s", url, exc)
+            continue
+        for item in parse_html(response.text):
+            if item.id in seen or item.paywalled:
+                continue
+            seen.add(item.id)
+            if store.seen(item.id) and store.alerted(item.id):
+                continue
+            outs = [
+                signal
+                for signal in interpret(item, roster=item.players, beneficiaries=beneficiaries, history=history)
+                if signal.kind == "out"
+            ]
+            if not outs:
+                continue
+            item.category = "Injury report"
+            try:
+                handle_item(config, store, odds, alerter, beneficiaries, history, noted, item, now)
+            except OddsError as exc:
+                log.error("odds lookup failed, will retry this out (%s): %s", item.headline, exc)
+            except Exception:
+                log.exception("could not handle out %s", item.headline)
 
 
 def _scan_injuries(config, store, odds, alerter, beneficiaries, history, noted) -> None:
