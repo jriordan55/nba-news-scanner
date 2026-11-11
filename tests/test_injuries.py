@@ -1,11 +1,16 @@
 import sys
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from feed import NewsItem
 from injuries import Injury, events, next_state, parse_injuries
 from model import interpret
+from scanner import handle_item
+from store import Store
 
 
 def _injury(key: str, player: str, status: str, team: str = "ATL") -> Injury:
@@ -83,6 +88,65 @@ class InjuryTests(unittest.TestCase):
         self.assertEqual(signals[0].side, "Over")
         self.assertEqual(next_state(previous, [], set())[0].key, "1")
         self.assertEqual(next_state(previous, [], {"1"}), [])
+
+    def test_an_injury_out_still_sends_a_watch(self):
+        previous = {"9": _injury("9", "Trae Young", "Day-To-Day")}
+        current = [_injury("1", "Jock Landale", "Out")]
+        item = events(previous, current)[0].item
+        sent: list[str] = []
+
+        class Watch:
+            def send_watch(self, card, outs):
+                sent.append(outs[0].player)
+
+            def send_priced(self, *args):
+                raise AssertionError("a confirmed out is a watch, not a bet")
+
+        class Config:
+            lookback_hours = 12
+            max_tip_hours = 96
+
+        with TemporaryDirectory() as tmp:
+            store = Store(Path(tmp))
+            try:
+                handle_item(
+                    Config(),
+                    store,
+                    None,
+                    Watch(),
+                    {},
+                    None,
+                    set(),
+                    item,
+                    datetime.now(timezone.utc),
+                )
+                self.assertEqual(sent, ["Jock Landale"])
+                self.assertTrue(store.alerted(item.id))
+                other = NewsItem(
+                    id="news-1",
+                    team="BOS",
+                    players=["Jayson Tatum"],
+                    category="News",
+                    published=datetime.now(timezone.utc),
+                    headline="Tatum signed an extension.",
+                    quote="",
+                    url="https://fcp.news/example",
+                )
+                handle_item(
+                    Config(),
+                    store,
+                    None,
+                    Watch(),
+                    {},
+                    None,
+                    set(),
+                    other,
+                    datetime.now(timezone.utc),
+                )
+                self.assertEqual(sent, ["Jock Landale"])
+                self.assertFalse(store.alerted(other.id))
+            finally:
+                store.close()
 
     def test_day_to_day_becoming_out_alerts_once_status_is_saved(self):
         previous = {"1": _injury("1", "Jock Landale", "Day-To-Day")}

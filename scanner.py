@@ -196,7 +196,9 @@ def _stored_injury(row) -> Injury:
 
 
 def handle_item(config, store, odds, alerter, beneficiaries, history, noted, item: NewsItem, now: datetime) -> None:
-    if item.category not in TRACKED_CATEGORIES:
+    # ESPN outs are watches, not one of the four news categories. A news card
+    # outside those four is ignored. An injury report change is not.
+    if item.category not in TRACKED_CATEGORIES and item.category != "Injury report":
         store.mark_seen(item, alerted=False)
         return
     if item.paywalled:
