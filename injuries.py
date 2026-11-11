@@ -45,7 +45,7 @@ class InjuryEvent:
 def fetch_injuries(session: requests.Session) -> list[Injury]:
     response = session.get(
         INJURY_URL,
-        timeout=25,
+        timeout=12,
         headers={"User-Agent": "Mozilla/5.0"},
     )
     response.raise_for_status()
@@ -81,6 +81,14 @@ def parse_injuries(payload: dict) -> list[Injury]:
                 )
             )
     return found
+
+
+def same_report(previous: dict[str, Injury], current: list[Injury]) -> bool:
+    """True when every player's status is unchanged. Notes alone are not news."""
+    current_by = {item.key: item for item in current}
+    if set(previous) != set(current_by):
+        return False
+    return all(previous[key].status == item.status for key, item in current_by.items())
 
 
 def events(previous: dict[str, Injury], current: list[Injury]) -> list[InjuryEvent]:

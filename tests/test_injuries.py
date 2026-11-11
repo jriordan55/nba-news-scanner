@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from feed import NewsItem
-from injuries import Injury, events, next_state, parse_injuries
+from injuries import Injury, events, next_state, parse_injuries, same_report
 from model import interpret
 from scanner import handle_item
 from store import Store
@@ -59,6 +59,13 @@ class InjuryTests(unittest.TestCase):
         self.assertEqual(parsed["Bradley Beal"].key, "6580")
         self.assertEqual(parsed["Bradley Beal"].status, "Out")
         self.assertEqual(parsed["James Harden"].status, "Day-To-Day")
+
+    def test_an_unchanged_report_is_not_polled_again(self):
+        current = [_injury("1", "Jock Landale", "Out"), _injury("2", "Trae Young", "Day-To-Day")]
+        previous = {item.key: item for item in current}
+        self.assertTrue(same_report(previous, current))
+        changed = [_injury("1", "Jock Landale", "Out"), _injury("2", "Trae Young", "Out")]
+        self.assertFalse(same_report(previous, changed))
 
     def test_first_report_is_a_baseline(self):
         current = [_injury("1", "Jock Landale", "Out")]

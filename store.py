@@ -41,7 +41,7 @@ class Store:
         data_dir.mkdir(parents=True, exist_ok=True)
         self.path = data_dir / "scanner.sqlite3"
         self.csv_path = data_dir / "clv.csv"
-        self.conn = sqlite3.connect(self.path)
+        self.conn = sqlite3.connect(self.path, timeout=30)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(

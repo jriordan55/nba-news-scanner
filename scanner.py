@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
@@ -24,7 +25,7 @@ from config import FEED_URLS, MARKET_LABELS, ROOT, TRACKED_CATEGORIES, load_conf
 from fcp_session import attach as attach_fcp_session
 from history import load_history
 from feed import NewsItem, fetch_feed
-from injuries import Injury, events as injury_events, fetch_injuries, next_state
+from injuries import Injury, events as injury_events, fetch_injuries, next_state, same_report
 from matchup import matchup_for
 from model import Signal, interpret
 from names import names_match, norm
@@ -34,6 +35,9 @@ from store import Store
 
 log = logging.getLogger("nba-scanner")
 RETRY_UNPRICED = timedelta(hours=6)
+# Injuries are checked on their own. The news crawl can sit on share images
+# and odds calls, and an out cannot wait behind that.
+INJURY_POLL_SECONDS = 2
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -92,31 +96,49 @@ def run(config, store: Store, once: bool) -> None:
     deadline = time.time() + int(raw_limit) if raw_limit else None
     if deadline is not None:
         log.info("this run watches for %s minutes", max(1, int(raw_limit) // 60))
-    while True:
-        started = time.time()
-        try:
-            cycle(config, store, odds, alerter, beneficiaries, history, noted)
-            refresh_closes(store, odds)
-            grade_settled(store, odds.session)
-        except Exception:
-            log.exception("scan cycle failed")
-        if once or (deadline is not None and time.time() >= deadline):
-            log.info("single pass finished" if once else "watch window finished")
-            store.export_csv()
-            return
-        if time.time() - last_beat > 600:
-            last_beat = time.time()
-            log.info(
-                "still watching. seen=%s open_bets=%s",
-                store.count_seen(),
-                len(store.open_bets()),
-            )
-        remaining = config.poll_seconds - (time.time() - started)
-        if remaining > 0:
-            time.sleep(remaining)
+    stop = threading.Event()
+    injury_thread = None
+    if not once:
+        injury_thread = threading.Thread(
+            target=_injury_loop,
+            args=(config, stop, beneficiaries, history),
+            name="injuries",
+            daemon=True,
+        )
+        injury_thread.start()
+        log.info("injury report is checked every %s seconds", INJURY_POLL_SECONDS)
+    try:
+        while True:
+            started = time.time()
+            try:
+                cycle(config, store, odds, alerter, beneficiaries, history, noted, injuries=once)
+                refresh_closes(store, odds)
+                grade_settled(store, odds.session)
+            except Exception:
+                log.exception("scan cycle failed")
+            if once or (deadline is not None and time.time() >= deadline):
+                log.info("single pass finished" if once else "watch window finished")
+                store.export_csv()
+                return
+            if time.time() - last_beat > 600:
+                last_beat = time.time()
+                log.info(
+                    "still watching. seen=%s open_bets=%s",
+                    store.count_seen(),
+                    len(store.open_bets()),
+                )
+            remaining = config.poll_seconds - (time.time() - started)
+            if remaining > 0:
+                time.sleep(remaining)
+    finally:
+        stop.set()
+        if injury_thread is not None:
+            injury_thread.join(timeout=5)
 
 
-def cycle(config, store, odds, alerter, beneficiaries, history, noted: set[str]) -> None:
+def cycle(config, store, odds, alerter, beneficiaries, history, noted: set[str], injuries: bool = False) -> None:
+    if injuries:
+        _scan_injuries(config, store, odds, alerter, beneficiaries, history, noted)
     attach_fcp_session(odds.session, config.data_dir)
     session = odds.session
     items: list[NewsItem] = []
@@ -147,7 +169,27 @@ def cycle(config, store, odds, alerter, beneficiaries, history, noted: set[str])
             log.error("odds lookup failed, will retry this card (%s): %s", item.headline, exc)
         except Exception:
             log.exception("could not handle %s", item.headline)
-    _scan_injuries(config, store, odds, alerter, beneficiaries, history, noted)
+
+
+def _injury_loop(config, stop: threading.Event, beneficiaries, history) -> None:
+    """Poll ESPN without waiting for the news crawl to finish."""
+    session = requests.Session()
+    odds = OddsClient(config.odds_api_key, session)
+    alerter = Alerter(config, session)
+    store = Store(config.data_dir)
+    noted: set[str] = set()
+    try:
+        while not stop.is_set():
+            started = time.monotonic()
+            try:
+                _scan_injuries(config, store, odds, alerter, beneficiaries, history, noted)
+            except Exception:
+                log.exception("injury scan failed")
+            remaining = INJURY_POLL_SECONDS - (time.monotonic() - started)
+            if remaining > 0:
+                stop.wait(remaining)
+    finally:
+        store.close()
 
 
 def _scan_injuries(config, store, odds, alerter, beneficiaries, history, noted) -> None:
@@ -164,6 +206,8 @@ def _scan_injuries(config, store, odds, alerter, beneficiaries, history, noted) 
     if not previous:
         store.replace_injuries([injury.row() for injury in current])
         log.info("injury baseline saved for %s players. Alerts start on the next change.", len(current))
+        return
+    if same_report(previous, current):
         return
     resolved: set[str] = set()
     now = datetime.now(timezone.utc)
@@ -217,10 +261,11 @@ def handle_item(config, store, odds, alerter, beneficiaries, history, noted, ite
         return
     outs = [signal for signal in signals if signal.kind == "out"]
     priced = [signal for signal in signals if signal.side]
+    # The out goes out before any odds call. A line can follow a few seconds later.
+    fresh = [signal for signal in outs if store.take_watch(signal, item)]
+    if fresh:
+        alerter.send_watch(item, fresh)
     if not priced:
-        fresh = [signal for signal in outs if store.take_watch(signal, item)]
-        if fresh:
-            alerter.send_watch(item, fresh)
         store.mark_seen(item, alerted=bool(fresh))
         return
 
