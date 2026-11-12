@@ -1,10 +1,10 @@
-"""Who gains the most, and in which market, when a rotation player is out.
+"""Who steps into the rotation when a player is out.
 
-The file is the regular-season study through November 10, 2026. A teammate
-counts only if he is still on that team and played at least two extra minutes.
-The market is whichever of points, rebounds, assists, and threes rose the
-most as a percentage of his nights with the absent player available. The hit
-rate is how often that stat beat his usual average on the absence nights.
+This season only. The teammate is the starter who gained the most minutes.
+If no starter gained two minutes, it is the bench player who played 18 or
+more. The market is his biggest percentage boost in points, rebounds, assists,
+or threes. Last season is included only when that same teammate also gained
+minutes for the same absence.
 """
 
 from __future__ import annotations
@@ -42,12 +42,12 @@ class Impacts:
 
     def lines(self, team: str, player: str) -> list[str]:
         current = self._find("2026-27", team, player)
-        last = self._find("2025-26", team, player)
         if current is None:
-            return [_format(last)] if last else []
+            return []
         found = [_format(current)]
-        if last and current["out_games"] < 4 and last["out_games"] >= 4:
-            found.append(_format(last, lead="Last season"))
+        last = current.get("last_season")
+        if isinstance(last, dict) and names_match(last.get("beneficiary", ""), current.get("beneficiary", "")):
+            found.append(_format(last, lead="Last season, same teammate"))
         return found
 
     def _find(self, season: str, team: str, player: str) -> dict | None:
