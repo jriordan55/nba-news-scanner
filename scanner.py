@@ -24,6 +24,7 @@ from alerts import Alerter
 from config import FCP_OUT_URLS, FEED_URLS, MARKET_LABELS, ROOT, TRACKED_CATEGORIES, load_config
 from fcp_session import attach as attach_fcp_session
 from history import load_history
+from impact import load_impacts
 from feed import USER_AGENT, NewsItem, fetch_feed, parse_html
 from injuries import Injury, events as injury_events, fetch_injuries, next_state, same_report
 from matchup import matchup_for
@@ -75,7 +76,8 @@ def run(config, store: Store, once: bool) -> None:
     else:
         log.info("Full Court Press session is not saved, so locked quotes stay hidden")
     odds = OddsClient(config.odds_api_key, session)
-    alerter = Alerter(config, session)
+    impacts = load_impacts(ROOT / "impact.json")
+    alerter = Alerter(config, session, impacts)
     beneficiaries = _load_beneficiaries(ROOT / "beneficiaries.json")
     history = load_history(ROOT / "absence_history.json")
     store.export_csv()
@@ -102,7 +104,7 @@ def run(config, store: Store, once: bool) -> None:
     if not once:
         injury_thread = threading.Thread(
             target=_injury_loop,
-            args=(config, stop, beneficiaries, history),
+            args=(config, stop, beneficiaries, history, impacts),
             name="injuries",
             daemon=True,
         )
@@ -172,11 +174,11 @@ def cycle(config, store, odds, alerter, beneficiaries, history, noted: set[str],
             log.exception("could not handle %s", item.headline)
 
 
-def _injury_loop(config, stop: threading.Event, beneficiaries, history) -> None:
+def _injury_loop(config, stop: threading.Event, beneficiaries, history, impacts) -> None:
     """Poll Full Court Press outs without waiting for the news crawl."""
     session = requests.Session()
     odds = OddsClient(config.odds_api_key, session)
-    alerter = Alerter(config, session)
+    alerter = Alerter(config, session, impacts)
     store = Store(config.data_dir)
     noted: set[str] = set()
     last_espn = 0.0

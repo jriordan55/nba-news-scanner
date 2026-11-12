@@ -18,9 +18,10 @@ ET = ZoneInfo("America/New_York")
 
 
 class Alerter:
-    def __init__(self, config: Config, session: requests.Session):
+    def __init__(self, config: Config, session: requests.Session, impacts=None):
         self.config = config
         self.session = session
+        self.impacts = impacts
 
     def send_priced(self, item: NewsItem, legs: list[Leg], outs: list[Signal]) -> None:
         text = render_priced(item, legs, outs)
@@ -28,7 +29,7 @@ class Alerter:
         self._deliver(text, embeds=discord_embeds(item, legs, outs))
 
     def send_watch(self, item: NewsItem, outs: list[Signal]) -> None:
-        text = render_watch(item, outs)
+        text = render_watch(item, outs, self.impacts)
         log.info("WATCH\n%s", text)
         self._deliver(text, embeds=None)
 
@@ -89,15 +90,23 @@ def render_priced(item: NewsItem, legs: list[Leg], outs: list[Signal]) -> str:
     return "\n".join(lines)
 
 
-def render_watch(item: NewsItem, outs: list[Signal]) -> str:
+def render_watch(item: NewsItem, outs: list[Signal], impacts=None) -> str:
     names = ", ".join(signal.player for signal in outs)
     team = outs[0].team or item.team
-    lines = [
-        f"{team} OUT: {names}.",
-        "A player prop is void if he does not play, so this is not an under.",
-        "The post does not name who gains the minutes. Add that teammate under players in beneficiaries.json to price the over automatically.",
-        item.headline,
-    ]
+    lines = [f"{team} OUT: {names}."]
+    found = False
+    if impacts is not None:
+        for signal in outs:
+            for line in impacts.lines(signal.team or team, signal.player):
+                lines.append(line)
+                found = True
+    lines.append("A player prop is void if he does not play, so this is not an under.")
+    if not found:
+        lines.append(
+            "No qualified teammate boost is on file for him. "
+            "Add the beneficiary under players in beneficiaries.json to price an over."
+        )
+    lines.append(item.headline)
     if item.url:
         lines.append(item.url)
     return "\n".join(lines)
