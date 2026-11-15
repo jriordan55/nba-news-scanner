@@ -96,7 +96,67 @@ class InjuryTests(unittest.TestCase):
         self.assertEqual(next_state(previous, [], set())[0].key, "1")
         self.assertEqual(next_state(previous, [], {"1"}), [])
 
-    def test_an_injury_out_still_sends_a_watch(self):
+    def test_a_starter_out_sends_one_alert_and_does_not_price(self):
+        item = events(
+            {"9": _injury("9", "Jalen Johnson", "Day-To-Day")},
+            [_injury("9", "Jalen Johnson", "Out")],
+        )[0].item
+
+        class Impacts:
+            def lines(self, team, player):
+                if player == "Jalen Johnson":
+                    return ["Bet Luguentz Dort Threes over."]
+                return []
+
+        class OneAlert:
+            impacts = Impacts()
+
+            def __init__(self):
+                self.watches = []
+                self.priced = []
+
+            def send_watch(self, card, outs):
+                self.watches.append(outs[0].player)
+
+            def send_priced(self, *args):
+                self.priced.append(args)
+
+        class Config:
+            lookback_hours = 12
+            max_tip_hours = 96
+
+        alerter = OneAlert()
+        with TemporaryDirectory() as tmp:
+            store = Store(Path(tmp))
+            try:
+                handle_item(
+                    Config(),
+                    store,
+                    None,
+                    alerter,
+                    {},
+                    None,
+                    set(),
+                    item,
+                    datetime.now(timezone.utc),
+                )
+                handle_item(
+                    Config(),
+                    store,
+                    None,
+                    alerter,
+                    {},
+                    None,
+                    set(),
+                    item,
+                    datetime.now(timezone.utc),
+                )
+            finally:
+                store.close()
+        self.assertEqual(alerter.watches, ["Jalen Johnson"])
+        self.assertEqual(alerter.priced, [])
+
+    def test_a_bench_out_does_not_send_an_alert(self):
         previous = {"9": _injury("9", "Trae Young", "Day-To-Day")}
         current = [_injury("1", "Jock Landale", "Out")]
         item = events(previous, current)[0].item
@@ -127,7 +187,7 @@ class InjuryTests(unittest.TestCase):
                     item,
                     datetime.now(timezone.utc),
                 )
-                self.assertEqual(sent, ["Jock Landale"])
+                self.assertEqual(sent, [])
                 self.assertTrue(store.alerted(item.id))
                 other = NewsItem(
                     id="news-1",
@@ -150,7 +210,7 @@ class InjuryTests(unittest.TestCase):
                     other,
                     datetime.now(timezone.utc),
                 )
-                self.assertEqual(sent, ["Jock Landale"])
+                self.assertEqual(sent, [])
                 self.assertFalse(store.alerted(other.id))
             finally:
                 store.close()

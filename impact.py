@@ -1,10 +1,8 @@
-"""Who steps into the rotation when a player is out.
+"""Who to bet when a starter is ruled out.
 
-This season only. The teammate is the starter who gained the most minutes.
-If no starter gained two minutes, it is the bench player who played 18 or
-more. The market is his biggest percentage boost in points, rebounds, assists,
-or threes. Last season is included only when that same teammate also gained
-minutes for the same absence.
+This season only. The injured player has to be a starter. The bet is the
+teammate whose usage rose the most while he was out, in the market with the
+biggest percentage boost. A bench injury has no line here.
 """
 
 from __future__ import annotations
@@ -42,13 +40,9 @@ class Impacts:
 
     def lines(self, team: str, player: str) -> list[str]:
         current = self._find("2026-27", team, player)
-        if current is None:
+        if current is None or current.get("absent_role") != "Starter":
             return []
-        found = [_format(current)]
-        last = current.get("last_season")
-        if isinstance(last, dict) and names_match(last.get("beneficiary", ""), current.get("beneficiary", "")):
-            found.append(_format(last, lead="Last season, same teammate"))
-        return found
+        return [_format(current)]
 
     def _find(self, season: str, team: str, player: str) -> dict | None:
         wanted = _team(team)
@@ -77,22 +71,15 @@ def load_impacts(path: Path) -> Impacts:
     return Impacts(rows)
 
 
-def _format(row: dict, lead: str = "Impact") -> str:
-    spot = "same position" if row.get("same_position") else "different position"
-    role = str(row.get("role") or "teammate").lower()
-    pos = row.get("beneficiary_pos") or ""
-    who = row["beneficiary"]
-    if pos:
-        who = f"{who} ({pos}, {role}, {spot})"
-    season = "this season" if row.get("season") == "2026-27" else "last season"
+def _format(row: dict) -> str:
     games = int(row["out_games"])
     return (
-        f"{lead}: {who} {row['market']} {round(float(row['boost_pct'])):+.0f}% "
+        f"Bet {row['beneficiary']} {row['market']} over. "
+        f"{round(float(row['boost_pct'])):+.0f}% this season "
         f"({_num(row['baseline'])} to {_num(row['out_avg'])}). "
         f"Hit {int(row['hit'])} of {games} above his usual. "
         f"Minutes {_num(row['minutes_baseline'])} to {_num(row['minutes_out'])} "
-        f"({float(row['minutes_delta']):+.1f}). "
-        f"{games} games {season}."
+        f"({float(row['minutes_delta']):+.1f})."
     )
 
 

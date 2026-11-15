@@ -30,6 +30,8 @@ class Alerter:
 
     def send_watch(self, item: NewsItem, outs: list[Signal]) -> None:
         text = render_watch(item, outs, self.impacts)
+        if not text:
+            return
         log.info("WATCH\n%s", text)
         self._deliver(text, embeds=None)
 
@@ -91,22 +93,24 @@ def render_priced(item: NewsItem, legs: list[Leg], outs: list[Signal]) -> str:
 
 
 def render_watch(item: NewsItem, outs: list[Signal], impacts=None) -> str:
-    names = ", ".join(signal.player for signal in outs)
+    """One alert: who is out, and who to bet from this season's usage."""
+    if impacts is None or not outs:
+        return ""
     team = outs[0].team or item.team
-    lines = [f"{team} OUT: {names}."]
-    found = False
-    if impacts is not None:
-        for signal in outs:
-            for line in impacts.lines(signal.team or team, signal.player):
-                lines.append(line)
-                found = True
-    lines.append("A player prop is void if he does not play, so this is not an under.")
-    if not found:
-        lines.append(
-            "No qualified teammate boost is on file for him. "
-            "Add the beneficiary under players in beneficiaries.json to price an over."
-        )
-    lines.append(item.headline)
+    bets: list[str] = []
+    named: list[str] = []
+    for signal in outs:
+        lines = impacts.lines(signal.team or team, signal.player)
+        if not lines:
+            continue
+        named.append(signal.player)
+        bets.extend(lines)
+    if not bets:
+        return ""
+    lines = [f"{team} OUT: {', '.join(named)}."]
+    lines.extend(bets)
+    if item.headline:
+        lines.append(item.headline)
     if item.url:
         lines.append(item.url)
     return "\n".join(lines)

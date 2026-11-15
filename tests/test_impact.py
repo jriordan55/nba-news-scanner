@@ -32,61 +32,43 @@ class ImpactAlertTests(unittest.TestCase):
     def setUp(self):
         self.impacts = load_impacts(ROOT / "impact.json")
 
-    def test_an_out_names_the_market_with_the_biggest_boost(self):
-        item, outs = _out("Jordan Poole", "NOP")
+    def test_a_starter_out_names_who_to_bet_from_this_season(self):
+        item, outs = _out("Jalen Johnson", "ATL")
         text = render_watch(item, outs, self.impacts)
-        self.assertIn("Jeremiah Fears", text)
-        self.assertIn("Points +141%", text)
-        self.assertIn("Hit 3 of 3 above his usual", text)
-        self.assertIn("Minutes 24.2 to 33", text)
+        self.assertIn("ATL OUT: Jalen Johnson.", text)
+        self.assertIn("Bet Luguentz Dort Threes over.", text)
+        self.assertIn("+215% this season", text)
+        self.assertIn("Hit 2 of 2 above his usual", text)
+        self.assertIn("Minutes 22.7 to 31.5", text)
         self.assertIn("+8.8", text)
-        self.assertIn("3 games this season", text)
-        self.assertIn("starter", text)
-        self.assertIn("this is not an under", text)
+        self.assertNotIn("Last season", text)
         self.assertNotIn("beneficiaries.json", text)
-        self.assertNotIn("Last season", text)
 
-    def test_last_season_is_not_used_for_a_different_teammate(self):
-        item, outs = _out("Kristaps Porzingis", "ATL")
-        text = render_watch(item, outs, self.impacts)
-        self.assertNotIn("Impact:", text)
-        self.assertNotIn("Jalen Johnson", text)
-        self.assertIn("No qualified teammate boost", text)
-
-    def test_this_season_uses_the_starter_who_gained_the_minutes(self):
+    def test_a_bench_injury_does_not_alert(self):
+        item, outs = _out("Jordan Poole", "NOP")
+        self.assertEqual(render_watch(item, outs, self.impacts), "")
         item, outs = _out("Terrence Shannon Jr.", "MIN")
-        text = render_watch(item, outs, self.impacts)
-        self.assertIn("Ayo Dosunmu", text)
-        self.assertIn("starter", text)
-        self.assertIn("this season", text)
-        self.assertNotIn("Jonathan Kuminga", text)
-        self.assertNotIn("Jaylen Clark", text)
-        self.assertNotIn("Last season", text)
+        self.assertEqual(render_watch(item, outs, self.impacts), "")
 
-    def test_last_season_is_added_only_for_the_same_teammate(self):
+    def test_last_season_is_never_added(self):
         row = {
             "season": "2026-27",
-            "team": "NOP",
-            "absent": "Jordan Poole",
-            "beneficiary": "Jeremiah Fears",
-            "beneficiary_pos": "G",
-            "same_position": True,
-            "role": "Starter",
-            "market": "Points",
-            "boost_pct": 141,
-            "baseline": 9.4,
-            "out_avg": 22.67,
-            "hit": 3,
-            "out_games": 3,
-            "minutes_baseline": 24.2,
-            "minutes_out": 33,
-            "minutes_delta": 8.8,
+            "team": "ATL",
+            "absent": "Jalen Johnson",
+            "absent_role": "Starter",
+            "beneficiary": "Luguentz Dort",
+            "market": "Threes",
+            "boost_pct": 215,
+            "baseline": 1.11,
+            "out_avg": 3.5,
+            "hit": 2,
+            "out_games": 2,
+            "minutes_baseline": 22.67,
+            "minutes_out": 31.5,
+            "minutes_delta": 8.83,
             "last_season": {
                 "season": "2025-26",
-                "beneficiary": "Trey Murphy III",
-                "beneficiary_pos": "F",
-                "same_position": False,
-                "role": "Starter",
+                "beneficiary": "Luguentz Dort",
                 "market": "Points",
                 "boost_pct": 40,
                 "baseline": 10,
@@ -98,25 +80,20 @@ class ImpactAlertTests(unittest.TestCase):
                 "minutes_delta": 8,
             },
         }
-        item, outs = _out("Jordan Poole", "NOP")
+        item, outs = _out("Jalen Johnson", "ATL")
         text = render_watch(item, outs, Impacts([row]))
+        self.assertIn("Bet Luguentz Dort Threes over.", text)
         self.assertNotIn("Last season", text)
-        self.assertNotIn("Trey Murphy", text)
-        row["last_season"]["beneficiary"] = "Jeremiah Fears"
-        text = render_watch(item, outs, Impacts([row]))
-        self.assertIn("Last season, same teammate: Jeremiah Fears", text)
+        self.assertNotIn("Points", text)
 
-    def test_a_player_without_a_sample_stays_a_plain_watch(self):
+    def test_a_player_without_a_sample_stays_silent(self):
         item, outs = _out("Jock Landale", "ATL")
-        text = render_watch(item, outs, self.impacts)
-        self.assertIn("OUT: Jock Landale", text)
-        self.assertIn("No qualified teammate boost", text)
-        self.assertNotIn("Impact:", text)
+        self.assertEqual(render_watch(item, outs, self.impacts), "")
 
     def test_the_same_player_on_a_new_team_uses_that_team(self):
-        item, outs = _out("Isaiah Stewart", "MEM")
+        item, outs = _out("Gui Santos", "GSW")
         text = render_watch(item, outs, self.impacts)
-        self.assertIn("GG Jackson", text)
+        self.assertIn("Bet Will Richard Threes over.", text)
         self.assertNotIn("Paul Reed", text)
 
 

@@ -283,6 +283,18 @@ def _stored_injury(row) -> Injury:
     )
 
 
+def _usage_bets(alerter, item: NewsItem, outs: list) -> list:
+    """Starters whose absence already changed a teammate's usage this season."""
+    impacts = getattr(alerter, "impacts", None)
+    if impacts is None:
+        return []
+    return [
+        signal
+        for signal in outs
+        if impacts.lines(signal.team or item.team, signal.player)
+    ]
+
+
 def handle_item(config, store, odds, alerter, beneficiaries, history, noted, item: NewsItem, now: datetime) -> None:
     # ESPN outs are watches, not one of the four news categories. A news card
     # outside those four is ignored. An injury report change is not.
@@ -305,11 +317,23 @@ def handle_item(config, store, odds, alerter, beneficiaries, history, noted, ite
         return
     outs = [signal for signal in signals if signal.kind == "out"]
     priced = [signal for signal in signals if signal.side]
-    # The out goes out before any odds call. A line can follow a few seconds later.
-    fresh = [signal for signal in outs if store.take_watch(signal, item)]
-    if fresh:
-        alerter.send_watch(item, fresh)
+    # An injury is one alert, sent as soon as the card lands. It names the
+    # starter who is out and the teammate to bet from this season. A bench
+    # injury is skipped unless a separate usage note has a side.
+    if item.category == "Injury report" and outs:
+        worth = _usage_bets(alerter, item, outs)
+        fresh = [signal for signal in worth if store.take_watch(signal, item)]
+        if fresh:
+            alerter.send_watch(item, fresh)
+        store.mark_seen(item, alerted=True)
+        return
     if not priced:
+        worth = _usage_bets(alerter, item, outs)
+        fresh = [signal for signal in worth if store.take_watch(signal, item)]
+        if fresh:
+            alerter.send_watch(item, fresh)
+            store.mark_seen(item, alerted=True)
+            return
         store.mark_seen(item, alerted=bool(fresh))
         return
 
@@ -323,9 +347,6 @@ def handle_item(config, store, odds, alerter, beneficiaries, history, noted, ite
             item.team or "?",
             item.headline,
         )
-        fresh = [signal for signal in outs if store.take_watch(signal, item)]
-        if fresh:
-            alerter.send_watch(item, fresh)
         store.mark_seen(item, alerted=False)
         return
 
@@ -352,15 +373,12 @@ def handle_item(config, store, odds, alerter, beneficiaries, history, noted, ite
         if not store.has_open(leg.event_id, leg.player, leg.market_label, leg.side, leg.home, leg.away)
     ]
 
-    fresh_outs = [signal for signal in outs if store.take_watch(signal, item)]
     if legs:
         _add_defense(odds.session, legs)
         alerter.send_priced(item, legs, outs)
         store.insert_legs(item, legs)
         store.mark_seen(item, alerted=True)
         return
-    if fresh_outs:
-        alerter.send_watch(item, fresh_outs)
     if item.id not in noted:
         noted.add(item.id)
         log.info(
