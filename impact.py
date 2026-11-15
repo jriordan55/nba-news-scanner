@@ -1,8 +1,8 @@
 """Who to bet when a starter is ruled out.
 
-This season only. The injured player has to be a starter. The bet is the
-teammate whose usage rose the most while he was out, in the market with the
-biggest percentage boost. A bench injury has no line here.
+This season only, including a starter who has not missed a game yet. The bet
+is the bench teammate who already produces that starter's stat. A bench
+injury has no line.
 """
 
 from __future__ import annotations
@@ -72,14 +72,12 @@ def load_impacts(path: Path) -> Impacts:
 
 
 def _format(row: dict) -> str:
-    games = int(row["out_games"])
+    games = int(row.get("games") or 0)
+    unit = str(row["market"]).lower()
     return (
         f"Bet {row['beneficiary']} {row['market']} over. "
-        f"{round(float(row['boost_pct'])):+.0f}% this season "
-        f"({_num(row['baseline'])} to {_num(row['out_avg'])}). "
-        f"Hit {int(row['hit'])} of {games} above his usual. "
-        f"Minutes {_num(row['minutes_baseline'])} to {_num(row['minutes_out'])} "
-        f"({float(row['minutes_delta']):+.1f})."
+        f"Averaging {_num(row['baseline'])} {unit} and {_num(row['minutes_baseline'])} minutes "
+        f"over {games} games this season."
     )
 
 
