@@ -1,9 +1,7 @@
-"""24/7 Full Court Press scanner.
+"""24/7 injury scanner.
 
-Reads Full Court Press. Outs come from the availability and health cards.
-The Odds API is called only after a player or an affected
-teammate is ready to alert. The alert price is kept next to the closing
-price in data/clv.csv.
+The only alert is a starter ruled out. It names who is out and who to bet
+from this season's usage. Other news is not read.
 """
 
 from __future__ import annotations
@@ -21,16 +19,14 @@ from pathlib import Path
 import requests
 
 from alerts import Alerter
-from config import FCP_OUT_URLS, FEED_URLS, MARKET_LABELS, ROOT, TRACKED_CATEGORIES, load_config
+from config import FCP_OUT_URLS, MARKET_LABELS, ROOT, load_config
 from fcp_session import attach as attach_fcp_session
 from history import load_history
 from impact import load_impacts
-from feed import USER_AGENT, NewsItem, fetch_feed, parse_html
+from feed import USER_AGENT, NewsItem, parse_html
 from injuries import Injury, events as injury_events, fetch_injuries, next_state, same_report
-from matchup import matchup_for
-from model import Signal, interpret
-from names import names_match, norm
-from odds_client import Board, Leg, OddsClient, OddsError, choose_main_line
+from model import interpret
+from odds_client import OddsClient, OddsError, choose_main_line
 from results import grade_settled
 from store import Store
 
@@ -81,7 +77,7 @@ def run(config, store: Store, once: bool) -> None:
     beneficiaries = _load_beneficiaries(ROOT / "beneficiaries.json")
     history = load_history(ROOT / "absence_history.json")
     store.export_csv()
-    log.info("watching %s", ", ".join(FEED_URLS))
+    log.info("watching starter outs on %s", ", ".join(FCP_OUT_URLS))
     log.info("clv file: %s", store.csv_path)
     if config.alerts_configured:
         channels = []
@@ -140,38 +136,9 @@ def run(config, store: Store, once: bool) -> None:
 
 
 def cycle(config, store, odds, alerter, beneficiaries, history, noted: set[str], injuries: bool = False) -> None:
+    """Close out open bets. A one-pass run also reads the injury report."""
     if injuries:
         _scan_injuries(config, store, odds, alerter, beneficiaries, history, noted)
-    attach_fcp_session(odds.session, config.data_dir)
-    session = odds.session
-    items: list[NewsItem] = []
-    for url in FEED_URLS:
-        try:
-            items.extend(fetch_feed(session, url))
-        except requests.RequestException as exc:
-            log.warning("feed read failed for %s: %s", url, exc)
-    seen_ids: set[str] = set()
-    now = datetime.now(timezone.utc)
-    for item in items:
-        if item.id in seen_ids:
-            continue
-        seen_ids.add(item.id)
-        # A card that produced no alert can match a wider rule on a later pass.
-        # Cards that already alerted stay closed.
-        if store.seen(item.id) and store.alerted(item.id):
-            continue
-        if (
-            store.seen(item.id)
-            and item.published
-            and item.published < now - timedelta(hours=config.lookback_hours)
-        ):
-            continue
-        try:
-            handle_item(config, store, odds, alerter, beneficiaries, history, noted, item, now)
-        except OddsError as exc:
-            log.error("odds lookup failed, will retry this card (%s): %s", item.headline, exc)
-        except Exception:
-            log.exception("could not handle %s", item.headline)
 
 
 def _injury_loop(config, stop: threading.Event, beneficiaries, history, impacts) -> None:
@@ -296,11 +263,7 @@ def _usage_bets(alerter, item: NewsItem, outs: list) -> list:
 
 
 def handle_item(config, store, odds, alerter, beneficiaries, history, noted, item: NewsItem, now: datetime) -> None:
-    # ESPN outs are watches, not one of the four news categories. A news card
-    # outside those four is ignored. An injury report change is not.
-    if item.category not in TRACKED_CATEGORIES and item.category != "Injury report":
-        store.mark_seen(item, alerted=False)
-        return
+    """Send the one starter-out alert. Every other card is closed with no message."""
     if item.paywalled:
         return
     if not item.url:
@@ -309,85 +272,17 @@ def handle_item(config, store, odds, alerter, beneficiaries, history, noted, ite
     if item.published and item.published < now - timedelta(hours=config.lookback_hours):
         store.mark_seen(item, alerted=False)
         return
+    if item.category != "Injury report":
+        store.mark_seen(item, alerted=True)
+        return
 
-    # Decide the player and any affected teammate before spending an API call.
     signals = interpret(item, roster=item.players, beneficiaries=beneficiaries, history=history)
-    if not signals:
-        store.mark_seen(item, alerted=False)
-        return
     outs = [signal for signal in signals if signal.kind == "out"]
-    priced = [signal for signal in signals if signal.side]
-    # An injury is one alert, sent as soon as the card lands. It names the
-    # starter who is out and the teammate to bet from this season. A bench
-    # injury is skipped unless a separate usage note has a side.
-    if item.category == "Injury report" and outs:
-        worth = _usage_bets(alerter, item, outs)
-        fresh = [signal for signal in worth if store.take_watch(signal, item)]
-        if fresh:
-            alerter.send_watch(item, fresh)
-        store.mark_seen(item, alerted=True)
-        return
-    if not priced:
-        worth = _usage_bets(alerter, item, outs)
-        fresh = [signal for signal in worth if store.take_watch(signal, item)]
-        if fresh:
-            alerter.send_watch(item, fresh)
-            store.mark_seen(item, alerted=True)
-            return
-        store.mark_seen(item, alerted=bool(fresh))
-        return
-
-    names = ", ".join(dict.fromkeys(signal.player for signal in priced))
-    log.info("alert for %s, pricing that game only: %s", names, item.headline)
-    event = odds.event_for_team(item.team, now, config.max_tip_hours) if item.team else None
-    if event is None:
-        log.info(
-            "no game inside %s hours for %s, so this card is not priced: %s",
-            config.max_tip_hours,
-            item.team or "?",
-            item.headline,
-        )
-        store.mark_seen(item, alerted=False)
-        return
-
-    markets: list[str] = []
-    for signal in priced:
-        for market in signal.markets:
-            if market not in markets:
-                markets.append(market)
-    board = odds.board(event, markets, prefer="pick6")
-    legs = _price(priced, board, prefer_retail=False)
-    missing = [signal for signal in priced if not _covered(signal, legs)]
-    if missing:
-        retail_markets: list[str] = []
-        for signal in missing:
-            for market in signal.markets:
-                if market not in retail_markets:
-                    retail_markets.append(market)
-        retail = odds.board(event, retail_markets, prefer="retail")
-        legs.extend(_price(missing, retail, prefer_retail=True))
-        legs = _prefer_pick6(legs)
-    legs = [
-        leg
-        for leg in legs
-        if not store.has_open(leg.event_id, leg.player, leg.market_label, leg.side, leg.home, leg.away)
-    ]
-
-    if legs:
-        _add_defense(odds.session, legs)
-        alerter.send_priced(item, legs, outs)
-        store.insert_legs(item, legs)
-        store.mark_seen(item, alerted=True)
-        return
-    if item.id not in noted:
-        noted.add(item.id)
-        log.info(
-            "no line yet for %s (%s). Will keep checking until the card is 6 hours old.",
-            names,
-            item.headline,
-        )
-    if item.published is None or item.published < now - RETRY_UNPRICED:
-        store.mark_seen(item, alerted=False)
+    worth = _usage_bets(alerter, item, outs)
+    fresh = [signal for signal in worth if store.take_watch(signal, item)]
+    if fresh:
+        alerter.send_watch(item, fresh)
+    store.mark_seen(item, alerted=True)
 
 
 def refresh_closes(store: Store, odds: OddsClient) -> None:
@@ -442,68 +337,6 @@ def refresh_closes(store: Store, odds: OddsClient) -> None:
                 changed = True
     if changed:
         store.export_csv()
-
-
-def _add_defense(session: requests.Session, legs: list[Leg]) -> None:
-    groups: dict[tuple[str, str], list[Leg]] = {}
-    for leg in legs:
-        groups.setdefault((leg.away, leg.home), []).append(leg)
-    for (away, home), group in groups.items():
-        matchup = matchup_for(session, away, home)
-        if matchup is None:
-            continue
-        for leg in group:
-            leg.defense = matchup.note(leg.player, leg.market)
-
-
-def _price(signals: list[Signal], board: Board, prefer_retail: bool) -> list[Leg]:
-    legs: list[Leg] = []
-    for signal in signals:
-        if not signal.side:
-            continue
-        for market in signal.markets:
-            offer = choose_main_line(board.offers, signal.player, market, signal.side)
-            if offer is None:
-                continue
-            if market == "player_threes" and offer.line < 1.5:
-                continue
-            legs.append(
-                Leg(
-                    player=offer.player,
-                    team=signal.team,
-                    market=market,
-                    market_label=MARKET_LABELS.get(market, market),
-                    side=signal.side,
-                    line=offer.line,
-                    price=offer.price,
-                    book=offer.book,
-                    book_key=offer.book_key,
-                    event_id=board.event_id,
-                    game=board.game,
-                    home=board.home,
-                    away=board.away,
-                    game_start=board.commence,
-                    confidence=signal.confidence,
-                    reason=signal.reason,
-                )
-            )
-    if prefer_retail:
-        return legs
-    return legs
-
-
-def _covered(signal: Signal, legs: list[Leg]) -> bool:
-    return any(names_match(signal.player, leg.player) for leg in legs)
-
-
-def _prefer_pick6(legs: list[Leg]) -> list[Leg]:
-    chosen: dict[tuple[str, str, str], Leg] = {}
-    for leg in legs:
-        key = (norm(leg.player), leg.market, leg.side)
-        current = chosen.get(key)
-        if current is None or (leg.book_key == "pick6" and current.book_key != "pick6"):
-            chosen[key] = leg
-    return list(chosen.values())
 
 
 def _market_key(label: str) -> str:

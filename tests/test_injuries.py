@@ -193,10 +193,10 @@ class InjuryTests(unittest.TestCase):
                     id="news-1",
                     team="BOS",
                     players=["Jayson Tatum"],
-                    category="News",
+                    category="Minutes & Usage",
                     published=datetime.now(timezone.utc),
-                    headline="Tatum signed an extension.",
-                    quote="",
+                    headline="Jayson Tatum will play more minutes tonight.",
+                    quote="Tatum is off his minutes limit.",
                     url="https://fcp.news/example",
                 )
                 handle_item(
@@ -211,7 +211,7 @@ class InjuryTests(unittest.TestCase):
                     datetime.now(timezone.utc),
                 )
                 self.assertEqual(sent, [])
-                self.assertFalse(store.alerted(other.id))
+                self.assertTrue(store.alerted(other.id))
             finally:
                 store.close()
 
