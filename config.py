@@ -16,11 +16,10 @@ FEED_URLS = (
     "https://fcp.news/coachspeak",
 )
 
-# Outs are posted here before the ESPN report updates. These are watches.
-FCP_OUT_URLS = (
-    "https://fcp.news/?all=1&cat=availability_status",
-    "https://fcp.news/?all=1&cat=health_progress",
-)
+# The live injury page. Polled every second. The category feeds are slower.
+INJURY_URL = "https://fcp.news/injury"
+COACHSPEAK_URL = "https://fcp.news/coachspeak"
+FCP_OUT_URLS = (INJURY_URL,)
 
 # Coachspeak is included because its cards are tagged with these same categories.
 TRACKED_CATEGORIES = frozenset({

@@ -8,7 +8,7 @@ import re
 import time
 import unicodedata
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
 import requests
@@ -335,6 +335,92 @@ def _read_share(
     if unlocked is None:
         log.warning("share image for %s had no quote", quote_id)
     return unlocked
+
+
+def parse_injury_page(html: str, now: datetime | None = None) -> list[NewsItem]:
+    """Read the Out and Questionable rows on https://fcp.news/injury."""
+    now = now or datetime.now(timezone.utc)
+    soup = BeautifulSoup(html, "html.parser")
+    status = ""
+    items: list[NewsItem] = []
+    seen: set[str] = set()
+    for tag in soup.find_all(["h2", "details"]):
+        if tag.name == "h2":
+            status = _injury_section(tag.get_text(" ", strip=True))
+            continue
+        if "board-row" not in (tag.get("class") or []):
+            continue
+        if status not in ("out", "questionable"):
+            continue
+        item = _injury_row(tag, status, now)
+        if item is None or item.id in seen:
+            continue
+        seen.add(item.id)
+        items.append(item)
+    return items
+
+
+def _injury_section(text: str) -> str:
+    folded = text.casefold()
+    if folded.startswith("out"):
+        return "out"
+    if folded.startswith("questionable"):
+        return "questionable"
+    return ""
+
+
+def _injury_row(row, status: str, now: datetime) -> NewsItem | None:
+    from config import ABBR_BY_NAME
+
+    name_node = row.select_one(".row-name")
+    if name_node is None:
+        return None
+    for extra in name_node.select(".today-tag"):
+        extra.extract()
+    name = _clean(name_node.get_text(" ", strip=True))
+    if not name:
+        return None
+    body = ""
+    grow = row.select_one(".grow")
+    if grow is not None:
+        spans = grow.find_all("span", recursive=False)
+        if len(spans) > 1:
+            body = _clean(spans[-1].get_text(" ", strip=True))
+    detail_node = row.select_one(".board-detail p")
+    detail = _clean(detail_node.get_text(" ", strip=True) if detail_node else "")
+    image = row.find("img")
+    team = ABBR_BY_NAME.get((image.get("alt") or "").casefold(), "") if image else ""
+    link = row.select_one("a[href^='/teams/']")
+    url = "https://fcp.news" + link["href"] if link and link.get("href") else "https://fcp.news/injury"
+    when = row.select_one(".mono")
+    published = _ago(when.get_text(" ", strip=True) if when else "", now)
+    if status == "out":
+        headline = f"{name} is ruled out. {detail}".strip()
+        if body:
+            headline = f"{headline} {body}".strip()
+    else:
+        headline = f"{name} ({body}) is questionable. {detail}".strip()
+    identity = f"{status}|{team}|{name}|{detail}"
+    news_id = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:16]
+    return NewsItem(
+        id=news_id,
+        team=team,
+        players=[name],
+        category="Injury report",
+        published=published,
+        headline=headline,
+        quote=detail,
+        url=url,
+    )
+
+
+def _ago(text: str, now: datetime) -> datetime | None:
+    match = re.fullmatch(r"(\d+)\s*([mhd])", text.strip().casefold())
+    if not match:
+        return None
+    count = int(match.group(1))
+    unit = {"m": timedelta(minutes=count), "h": timedelta(hours=count), "d": timedelta(days=count)}[match.group(2)]
+    return now - unit
 
 
 def _ocr():

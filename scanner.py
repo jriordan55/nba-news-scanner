@@ -1,7 +1,9 @@
 """24/7 injury scanner.
 
-The only alert is a starter ruled out. It names who is out and who to bet
-from this season's usage. Other news is not read.
+A starter ruled out, or a questionable tag the injury history says will miss,
+sends one alert: the teammate market with the biggest jump this season, the
+average when the starter is off the court, and the DraftKings line. Coachspeak
+is read only when the words are a clear over or under.
 """
 
 from __future__ import annotations
@@ -19,14 +21,15 @@ from pathlib import Path
 import requests
 
 from alerts import Alerter
-from config import FCP_OUT_URLS, MARKET_LABELS, ROOT, load_config
+from config import COACHSPEAK_URL, INJURY_URL, MARKET_LABELS, ROOT, load_config
 from fcp_session import attach as attach_fcp_session
 from history import load_history
 from impact import load_impacts
-from feed import USER_AGENT, NewsItem, parse_html
+from feed import USER_AGENT, NewsItem, parse_html, parse_injury_page
 from injuries import Injury, events as injury_events, fetch_injuries, next_state, same_report
-from model import interpret
-from odds_client import OddsClient, OddsError, choose_main_line
+from model import interpret, obvious_side, spoken_market
+from odds_client import Leg, OddsClient, OddsError, choose_main_line
+from outlook import anticipate_out
 from results import grade_settled
 from store import Store
 
@@ -34,8 +37,11 @@ log = logging.getLogger("nba-scanner")
 RETRY_UNPRICED = timedelta(hours=6)
 # Injuries are checked on their own. The news crawl can sit on share images
 # and odds calls, and an out cannot wait behind that.
-INJURY_POLL_SECONDS = 2
+INJURY_POLL_SECONDS = 1
 ESPN_POLL_SECONDS = 30
+COACH_POLL_SECONDS = 15
+PRICE_WAIT = timedelta(minutes=20)
+LABEL_TO_MARKET = {label: key for key, label in MARKET_LABELS.items()}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -77,7 +83,7 @@ def run(config, store: Store, once: bool) -> None:
     beneficiaries = _load_beneficiaries(ROOT / "beneficiaries.json")
     history = load_history(ROOT / "absence_history.json")
     store.export_csv()
-    log.info("watching starter outs on %s", ", ".join(FCP_OUT_URLS))
+    log.info("watching %s", INJURY_URL)
     log.info("clv file: %s", store.csv_path)
     if config.alerts_configured:
         channels = []
@@ -144,11 +150,13 @@ def cycle(config, store, odds, alerter, beneficiaries, history, noted: set[str],
 def _injury_loop(config, stop: threading.Event, beneficiaries, history, impacts) -> None:
     """Poll Full Court Press outs without waiting for the news crawl."""
     session = requests.Session()
+    attach_fcp_session(session, config.data_dir)
     odds = OddsClient(config.odds_api_key, session)
     alerter = Alerter(config, session, impacts)
     store = Store(config.data_dir)
     noted: set[str] = set()
     last_espn = 0.0
+    last_coach = 0.0
     try:
         while not stop.is_set():
             started = time.monotonic()
@@ -156,6 +164,12 @@ def _injury_loop(config, stop: threading.Event, beneficiaries, history, impacts)
                 _scan_fcp_outs(config, store, odds, alerter, beneficiaries, history, noted)
             except Exception:
                 log.exception("full court press injury scan failed")
+            if time.monotonic() - last_coach >= COACH_POLL_SECONDS:
+                last_coach = time.monotonic()
+                try:
+                    _scan_coachspeak(config, store, odds, alerter, now=datetime.now(timezone.utc))
+                except Exception:
+                    log.exception("coachspeak scan failed")
             if time.monotonic() - last_espn >= ESPN_POLL_SECONDS:
                 last_espn = time.monotonic()
                 try:
@@ -170,37 +184,51 @@ def _injury_loop(config, stop: threading.Event, beneficiaries, history, impacts)
 
 
 def _scan_fcp_outs(config, store, odds, alerter, beneficiaries, history, noted) -> None:
-    """Alert a Full Court Press out as soon as the card is on the page."""
+    """Alert the injury page the second a new out, or a projected out, is posted."""
     session = odds.session
     now = datetime.now(timezone.utc)
-    seen: set[str] = set()
-    for url in FCP_OUT_URLS:
-        try:
-            response = session.get(url, timeout=8, headers={"User-Agent": USER_AGENT})
-            response.raise_for_status()
-        except requests.RequestException as exc:
-            log.warning("full court press out feed failed for %s: %s", url, exc)
+    try:
+        response = session.get(INJURY_URL, timeout=8, headers={"User-Agent": USER_AGENT})
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        log.warning("injury page failed: %s", exc)
+        return
+    items = parse_injury_page(response.text, now)
+    if not store.seen("fcp-injury-baseline"):
+        for item in items:
+            store.mark_seen(item, alerted=True)
+        store.mark_seen(_marker("fcp-injury-baseline"), alerted=True)
+        log.info("injury page baseline saved (%s cards). Alerts start on the next update.", len(items))
+        return
+    for item in items:
+        if store.seen(item.id) and store.alerted(item.id):
             continue
-        for item in parse_html(response.text):
-            if item.id in seen or item.paywalled:
-                continue
-            seen.add(item.id)
-            if store.seen(item.id) and store.alerted(item.id):
-                continue
+        if item.published and item.published < now - timedelta(hours=config.lookback_hours):
+            store.mark_seen(item, alerted=True)
+            continue
+        text = item.text
+        outs = [
+            signal
+            for signal in interpret(item, roster=item.players, beneficiaries=beneficiaries, history=history)
+            if signal.kind == "out"
+        ]
+        if not outs and anticipate_out(text) and item.players:
+            item.headline = f"{item.players[0]} is ruled out (projected). {item.headline}"
             outs = [
                 signal
                 for signal in interpret(item, roster=item.players, beneficiaries=beneficiaries, history=history)
                 if signal.kind == "out"
             ]
-            if not outs:
-                continue
-            item.category = "Injury report"
-            try:
-                handle_item(config, store, odds, alerter, beneficiaries, history, noted, item, now)
-            except OddsError as exc:
-                log.error("odds lookup failed, will retry this out (%s): %s", item.headline, exc)
-            except Exception:
-                log.exception("could not handle out %s", item.headline)
+        if not outs:
+            store.mark_seen(item, alerted=True)
+            continue
+        item.category = "Injury report"
+        try:
+            handle_item(config, store, odds, alerter, beneficiaries, history, noted, item, now)
+        except OddsError as exc:
+            log.error("odds lookup failed, will retry this out (%s): %s", item.headline, exc)
+        except Exception:
+            log.exception("could not handle out %s", item.headline)
 
 
 def _scan_injuries(config, store, odds, alerter, beneficiaries, history, noted) -> None:
@@ -262,6 +290,186 @@ def _usage_bets(alerter, item: NewsItem, outs: list) -> list:
     ]
 
 
+def _scan_coachspeak(config, store, odds, alerter, now) -> None:
+    """One alert when a coach's words are a clear over or under."""
+    session = odds.session
+    try:
+        response = session.get(COACHSPEAK_URL, timeout=8, headers={"User-Agent": USER_AGENT})
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        log.warning("coachspeak failed: %s", exc)
+        return
+    items = [item for item in parse_html(response.text) if item.url and not item.paywalled]
+    if not store.seen("coachspeak-baseline"):
+        for item in items:
+            store.mark_seen(item, alerted=True)
+        store.mark_seen(_marker("coachspeak-baseline"), alerted=True)
+        log.info("coachspeak baseline saved (%s cards). Alerts start on the next update.", len(items))
+        return
+    for item in items:
+        if store.alerted(item.id):
+            continue
+        if item.published and item.published < now - timedelta(hours=config.lookback_hours):
+            store.mark_seen(item, alerted=True)
+            continue
+        side = obvious_side(item.text)
+        if side is None or not item.players:
+            store.mark_seen(item, alerted=True)
+            continue
+        player = item.players[0]
+        market = spoken_market(item.text)
+        quote = None
+        if odds is not None:
+            ready, quote = _price_player(odds, config, item, player, market, side, now)
+            if not ready:
+                continue
+        book = ""
+        if quote:
+            book = f" {_num_line(quote['line'])} ({_american(quote['price'])}) {quote['book']}"
+        text = f"{item.team} {player} {side} {market}{book}.\n{item.headline}"
+        if item.url:
+            text += f"\n{item.url}"
+        alerter.deliver(text)
+        if quote:
+            _save_leg(store, item, player, item.team, market, side, quote, item.headline)
+        store.mark_seen(item, alerted=True)
+
+
+def _attach_prices(odds, config, impacts, item, outs, now) -> tuple[bool, dict]:
+    """DraftKings first. Wait up to 20 minutes if the number is not posted yet."""
+    quotes: dict = {}
+    waiting = False
+    for signal in outs:
+        bet = impacts.bet(signal.team or item.team, signal.player) if hasattr(impacts, "bet") else None
+        if bet is None:
+            continue
+        event = odds.event_for_team(bet.get("team") or item.team or "", now, config.max_tip_hours)
+        if event is None:
+            continue
+        quote = _lookup(odds, event, bet["beneficiary"], bet["market"], "Over")
+        if quote is None:
+            if not _aged(item, now):
+                waiting = True
+            continue
+        quote["reason"] = impacts.lines(signal.team or item.team, signal.player, quote)[0]
+        quotes[signal.player] = quote
+    if waiting:
+        return False, {}
+    return True, quotes
+
+
+def _price_player(odds, config, item, player, market, side, now) -> tuple[bool, dict | None]:
+    event = odds.event_for_team(item.team or "", now, config.max_tip_hours)
+    if event is None:
+        return True, None
+    quote = _lookup(odds, event, player, market, side)
+    if quote is None and not _aged(item, now):
+        return False, None
+    return True, quote
+
+
+def _lookup(odds, event, player, market, side) -> dict | None:
+    key = LABEL_TO_MARKET.get(market)
+    if not key:
+        return None
+    offer = None
+    board = None
+    for prefer in ("retail", "pick6"):
+        board = odds.board(event, [key], prefer=prefer, ttl=15)
+        offer = choose_main_line(board.offers, player, key, side)
+        if offer is not None:
+            break
+    if offer is None or board is None:
+        return None
+    book = "DraftKings" if offer.book_key == "draftkings" else offer.book
+    return {
+        "line": offer.line,
+        "price": offer.price,
+        "book": book,
+        "book_key": offer.book_key,
+        "event_id": board.event_id,
+        "game": board.game,
+        "home": board.home,
+        "away": board.away,
+        "game_start": board.commence,
+    }
+
+
+def _save_quotes(store, item, impacts, outs, quotes) -> None:
+    for signal in outs:
+        quote = quotes.get(signal.player)
+        if not quote:
+            continue
+        bet = impacts.bet(signal.team or item.team, signal.player)
+        if bet is None:
+            continue
+        _save_leg(
+            store,
+            item,
+            bet["beneficiary"],
+            bet.get("team") or item.team,
+            bet["market"],
+            "Over",
+            quote,
+            quote.get("reason") or item.headline,
+        )
+
+
+def _save_leg(store, item, player, team, market, side, quote, reason) -> None:
+    leg = Leg(
+        player=player,
+        team=team or item.team,
+        market=market,
+        market_label=market,
+        side=side,
+        line=float(quote["line"]),
+        price=int(quote["price"]),
+        book=quote["book"],
+        book_key=quote["book_key"],
+        event_id=quote["event_id"],
+        game=quote["game"],
+        home=quote["home"],
+        away=quote["away"],
+        game_start=quote["game_start"],
+        confidence=1.0,
+        reason=reason,
+    )
+    if store.has_open(leg.event_id, leg.player, leg.market, leg.side, leg.home, leg.away):
+        return
+    store.insert_legs(item, [leg])
+
+
+def _aged(item: NewsItem, now: datetime) -> bool:
+    if item.published is None:
+        return True
+    published = item.published
+    if published.tzinfo is None:
+        published = published.replace(tzinfo=timezone.utc)
+    return now - published >= PRICE_WAIT
+
+
+def _marker(news_id: str) -> NewsItem:
+    return NewsItem(
+        id=news_id,
+        team="",
+        players=[],
+        category="",
+        published=None,
+        headline=news_id,
+        quote="",
+        url="",
+    )
+
+
+def _num_line(value) -> str:
+    text = f"{float(value):.2f}".rstrip("0").rstrip(".")
+    return text
+
+
+def _american(value: int) -> str:
+    return f"+{value}" if value > 0 else str(value)
+
+
 def handle_item(config, store, odds, alerter, beneficiaries, history, noted, item: NewsItem, now: datetime) -> None:
     """Send the one starter-out alert. Every other card is closed with no message."""
     if item.paywalled:
@@ -279,9 +487,19 @@ def handle_item(config, store, odds, alerter, beneficiaries, history, noted, ite
     signals = interpret(item, roster=item.players, beneficiaries=beneficiaries, history=history)
     outs = [signal for signal in signals if signal.kind == "out"]
     worth = _usage_bets(alerter, item, outs)
+    if not worth:
+        store.mark_seen(item, alerted=True)
+        return
+    quotes: dict = {}
+    if odds is not None:
+        ready, quotes = _attach_prices(odds, config, alerter.impacts, item, worth, now)
+        if not ready:
+            return
     fresh = [signal for signal in worth if store.take_watch(signal, item)]
     if fresh:
+        alerter.quotes = quotes
         alerter.send_watch(item, fresh)
+        _save_quotes(store, item, alerter.impacts, fresh, quotes)
     store.mark_seen(item, alerted=True)
 
 

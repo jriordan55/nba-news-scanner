@@ -29,7 +29,14 @@ class Alerter:
         self._deliver(text, embeds=discord_embeds(item, legs, outs))
 
     def send_watch(self, item: NewsItem, outs: list[Signal]) -> None:
-        text = render_watch(item, outs, self.impacts)
+        text = render_watch(item, outs, self.impacts, getattr(self, "quotes", None))
+        if not text:
+            return
+        log.info("WATCH\n%s", text)
+        self._deliver(text, embeds=None)
+
+    def deliver(self, text: str) -> None:
+        text = (text or "").strip()
         if not text:
             return
         log.info("WATCH\n%s", text)
@@ -92,15 +99,16 @@ def render_priced(item: NewsItem, legs: list[Leg], outs: list[Signal]) -> str:
     return "\n".join(lines)
 
 
-def render_watch(item: NewsItem, outs: list[Signal], impacts=None) -> str:
-    """One alert: who is out, and who to bet from this season's usage."""
+def render_watch(item: NewsItem, outs: list[Signal], impacts=None, quotes=None) -> str:
+    """One alert: who is out, the off-court jump, and the DraftKings number."""
     if impacts is None or not outs:
         return ""
+    quotes = quotes or {}
     team = outs[0].team or item.team
     bets: list[str] = []
     named: list[str] = []
     for signal in outs:
-        lines = impacts.lines(signal.team or team, signal.player)
+        lines = impacts.lines(signal.team or team, signal.player, quotes.get(signal.player))
         if not lines:
             continue
         named.append(signal.player)

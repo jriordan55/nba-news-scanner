@@ -368,6 +368,53 @@ def _mapped(beneficiaries: dict[str, list[str]], player: str) -> list[str]:
     return []
 
 
+HEDGE_RE = re.compile(
+    r"\b(could|might|may|maybe|possibly|possible|chance|unclear|uncertain|"
+    r"if he|if she|if they)\b",
+    re.IGNORECASE,
+)
+OBVIOUS_OVER_RE = re.compile(
+    r"more minutes|increased minutes|minutes bump|"
+    r"minutes will (?:rise|increase|go up)|bigger role|expanded role|larger role|"
+    r"more usage|usage will (?:rise|increase|go up)",
+    re.IGNORECASE,
+)
+OBVIOUS_UNDER_RE = re.compile(
+    r"minutes? (?:limit|cap|restriction)|limited to \d+ minutes|"
+    r"on a (?:minutes? )?limit|lighter minutes|lighter (?:minute )?load|"
+    r"reduced minutes|fewer minutes|smaller role|reduced role|"
+    r"will not start|won'?t start|isn'?t starting|not starting|"
+    r"coming off the bench",
+    re.IGNORECASE,
+)
+
+
+def obvious_side(text: str) -> str | None:
+    """Over or under only when the coach's words are not hedged."""
+    if not text or HEDGE_RE.search(text):
+        return None
+    if OUT_RE.search(text) or QUESTIONABLE_RE.search(text) or DOUBTFUL_RE.search(text):
+        return None
+    if LIFTED_RE.search(text) or OBVIOUS_OVER_RE.search(text):
+        return "Over"
+    if OBVIOUS_UNDER_RE.search(text):
+        return "Under"
+    return None
+
+
+def spoken_market(text: str) -> str:
+    folded = (text or "").casefold()
+    if "assist" in folded:
+        return "Assists"
+    if "rebound" in folded:
+        return "Rebounds"
+    if "three" in folded or "3-point" in folded or "from deep" in folded:
+        return "Threes"
+    if "points, rebounds" in folded or "pra" in folded:
+        return "PRA"
+    return "Points"
+
+
 def _lighter_minutes(evidence: str) -> bool:
     if LIFTED_RE.search(evidence):
         return False

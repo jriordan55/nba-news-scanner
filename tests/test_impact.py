@@ -32,14 +32,20 @@ class ImpactAlertTests(unittest.TestCase):
     def setUp(self):
         self.impacts = load_impacts(ROOT / "impact.json")
 
-    def test_porter_out_bets_brown_points(self):
-        item, outs = _out("Michael Porter Jr.", "BKN")
-        text = render_watch(item, outs, self.impacts)
-        self.assertIn("BKN OUT: Michael Porter Jr.", text)
-        self.assertIn("Bet Mikel Brown Jr. Points over.", text)
-        self.assertIn("12.9 points", text)
-        self.assertIn("23.3 minutes", text)
-        self.assertIn("this season", text)
+    def test_a_starter_out_shows_the_jump_and_the_draftkings_line(self):
+        item, outs = _out("Jalen Johnson", "ATL")
+        text = render_watch(
+            item,
+            outs,
+            self.impacts,
+            {"Jalen Johnson": {"line": 1.5, "price": -120, "book": "DraftKings"}},
+        )
+        self.assertIn("ATL OUT: Jalen Johnson", text)
+        self.assertIn("Bet Luguentz Dort Threes over 1.5 (-120) DraftKings.", text)
+        self.assertIn("when Jalen Johnson is off the court", text)
+        self.assertIn("Average off the court:", text)
+        self.assertIn("Usage", text)
+        self.assertIn("shots per minute", text)
         self.assertNotIn("Last season", text)
 
     def test_a_bench_injury_does_not_alert(self):
@@ -55,15 +61,21 @@ class ImpactAlertTests(unittest.TestCase):
             "beneficiary": "Mikel Brown Jr.",
             "market": "Points",
             "baseline": 12.86,
+            "out_avg": 15.7,
+            "boost_pct": 22.1,
             "minutes_baseline": 23.29,
             "games": 7,
+            "usage_pct": 18.0,
+            "usage_in": 0.42,
+            "usage_out": 0.50,
             "last_season": {"beneficiary": "Mikel Brown Jr.", "market": "Threes"},
         }
         item, outs = _out("Michael Porter Jr.", "BKN")
         text = render_watch(item, outs, Impacts([row]))
         self.assertIn("Bet Mikel Brown Jr. Points over.", text)
+        self.assertIn("Average off the court: 15.7", text)
+        self.assertIn("Usage +18%", text)
         self.assertNotIn("Last season", text)
-        self.assertNotIn("Threes", text)
 
     def test_a_player_without_a_sample_stays_silent(self):
         item, outs = _out("Jock Landale", "ATL")
