@@ -111,6 +111,23 @@ class OddsClient:
                 chosen = event
         return chosen
 
+    def in_progress(self, abbr: str, now: datetime) -> bool:
+        """True from tip until a normal game, including overtime, would be over."""
+        names = {name.casefold() for name in TEAMS.get(abbr, ())}
+        if not names:
+            return False
+        for event in self._upcoming():
+            home = str(event.get("home_team", "")).casefold()
+            away = str(event.get("away_team", "")).casefold()
+            if home not in names and away not in names:
+                continue
+            commence = _parse_time(event.get("commence_time"))
+            if commence is None:
+                continue
+            if commence <= now < commence + timedelta(hours=3, minutes=30):
+                return True
+        return False
+
     def board(self, event: dict, markets: list[str], prefer: str = "pick6", ttl: float = 120) -> Board:
         """Price one game. Caller must already know which players are being alerted."""
         if time.time() < self.disabled_until:

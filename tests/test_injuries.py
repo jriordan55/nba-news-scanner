@@ -1,6 +1,7 @@
 import sys
 import unittest
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -9,7 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from feed import NewsItem
 from injuries import Injury, events, next_state, parse_injuries, same_report
 from model import interpret
-from scanner import handle_item
+from odds_client import OddsClient
+from scanner import _scoreboard_live, handle_item
 from store import Store
 
 
@@ -155,6 +157,82 @@ class InjuryTests(unittest.TestCase):
                 store.close()
         self.assertEqual(alerter.watches, ["Jalen Johnson"])
         self.assertEqual(alerter.priced, [])
+
+    def test_a_game_that_has_tipped_does_not_alert(self):
+        item = events(
+            {"9": _injury("9", "Jalen Johnson", "Day-To-Day")},
+            [_injury("9", "Jalen Johnson", "Out")],
+        )[0].item
+
+        class Impacts:
+            def lines(self, team, player):
+                return ["Bet Luguentz Dort Threes over."] if player == "Jalen Johnson" else []
+
+        class OneAlert:
+            impacts = Impacts()
+
+            def __init__(self):
+                self.watches = []
+
+            def send_watch(self, card, outs):
+                self.watches.append(outs[0].player)
+
+        class Live:
+            def in_progress(self, team, now):
+                return team == "ATL"
+
+        alerter = OneAlert()
+        with TemporaryDirectory() as tmp:
+            store = Store(Path(tmp))
+            try:
+                handle_item(
+                    type("Config", (), {"lookback_hours": 12, "max_tip_hours": 96})(),
+                    store,
+                    Live(),
+                    alerter,
+                    {},
+                    None,
+                    set(),
+                    item,
+                    datetime.now(timezone.utc),
+                )
+                alerted = store.alerted(item.id)
+            finally:
+                store.close()
+        self.assertEqual(alerter.watches, [])
+        self.assertTrue(alerted)
+
+    def test_in_progress_is_only_from_tip_until_the_game_ends(self):
+        client = OddsClient("", object())
+        now = datetime(2026, 11, 18, 1, 30, tzinfo=timezone.utc)
+        client._events = [
+            {
+                "home_team": "Atlanta Hawks",
+                "away_team": "Boston Celtics",
+                "commence_time": "2026-11-18T00:00:00Z",
+            }
+        ]
+        client._events_at = time.time()
+        self.assertTrue(client.in_progress("ATL", now))
+        self.assertFalse(client.in_progress("ATL", now + timedelta(hours=4)))
+        self.assertFalse(client.in_progress("BKN", now))
+
+    def test_scoreboard_live_uses_scanner_abbreviations(self):
+        payload = {
+            "events": [
+                {
+                    "status": {"type": {"state": "in"}},
+                    "competitions": [
+                        {"competitors": [{"team": {"abbreviation": "GS"}}, {"team": {"abbreviation": "NY"}}]}
+                    ],
+                },
+                {
+                    "status": {"type": {"state": "pre"}},
+                    "competitions": [{"competitors": [{"team": {"abbreviation": "BOS"}}]}],
+                },
+            ]
+        }
+        self.assertEqual(_scoreboard_live(payload), {"GSW", "NYK"})
 
     def test_a_bench_out_does_not_send_an_alert(self):
         previous = {"9": _injury("9", "Trae Young", "Day-To-Day")}

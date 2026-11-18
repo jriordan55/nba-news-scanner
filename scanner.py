@@ -3,7 +3,8 @@
 A starter ruled out, or a questionable tag the injury history says will miss,
 sends one alert: the teammate market with the biggest jump this season, the
 average when the starter is off the court, and the DraftKings line. Coachspeak
-is read only when the words are a clear over or under.
+is read only when the words are a clear over or under. Nothing is sent once
+that team's game has tipped.
 """
 
 from __future__ import annotations
@@ -41,6 +42,18 @@ INJURY_POLL_SECONDS = 1
 ESPN_POLL_SECONDS = 30
 COACH_POLL_SECONDS = 15
 PRICE_WAIT = timedelta(minutes=20)
+SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
+ESPN_ABBR = {
+    "GS": "GSW",
+    "NY": "NYK",
+    "NO": "NOP",
+    "SA": "SAS",
+    "UTAH": "UTA",
+    "WSH": "WAS",
+    "PHO": "PHX",
+    "BRK": "BKN",
+}
+_LIVE_TEAMS: tuple[float, set[str]] = (0.0, set())
 LABEL_TO_MARKET = {label: key for key, label in MARKET_LABELS.items()}
 
 
@@ -316,6 +329,10 @@ def _scan_coachspeak(config, store, odds, alerter, now) -> None:
         if side is None or not item.players:
             store.mark_seen(item, alerted=True)
             continue
+        if _game_underway(odds, item.team, now):
+            log.info("no alert during the game for %s", item.team or item.headline)
+            store.mark_seen(item, alerted=True)
+            continue
         player = item.players[0]
         market = spoken_market(item.text)
         quote = None
@@ -439,6 +456,53 @@ def _save_leg(store, item, player, team, market, side, quote, reason) -> None:
     store.insert_legs(item, [leg])
 
 
+def _game_underway(odds, team: str, now: datetime) -> bool:
+    """A tipped game is not an alert. Pregame news still sends."""
+    if odds is None or not team:
+        return False
+    try:
+        if odds.in_progress(team, now):
+            return True
+    except OddsError as exc:
+        log.warning("could not check the odds slate (%s)", exc)
+    session = getattr(odds, "session", None)
+    if session is None:
+        return False
+    return team in _live_teams(session)
+
+
+def _live_teams(session) -> set[str]:
+    """ESPN abbreviations of games that are in progress. Cached for 20 seconds."""
+    global _LIVE_TEAMS
+    fetched, teams = _LIVE_TEAMS
+    if time.monotonic() - fetched < 20:
+        return teams
+    try:
+        response = session.get(SCOREBOARD_URL, timeout=8, headers={"User-Agent": USER_AGENT})
+        response.raise_for_status()
+        teams = _scoreboard_live(response.json())
+    except (requests.RequestException, ValueError) as exc:
+        log.warning("scoreboard check failed: %s", exc)
+        return teams
+    _LIVE_TEAMS = (time.monotonic(), teams)
+    return teams
+
+
+def _scoreboard_live(payload: dict) -> set[str]:
+    live: set[str] = set()
+    for event in payload.get("events") or []:
+        state = ((event.get("status") or {}).get("type") or {}).get("state")
+        if state != "in":
+            continue
+        for competition in event.get("competitions") or []:
+            for side in competition.get("competitors") or []:
+                abbr = str((side.get("team") or {}).get("abbreviation") or "").upper()
+                abbr = ESPN_ABBR.get(abbr, abbr)
+                if abbr:
+                    live.add(abbr)
+    return live
+
+
 def _aged(item: NewsItem, now: datetime) -> bool:
     if item.published is None:
         return True
@@ -488,6 +552,11 @@ def handle_item(config, store, odds, alerter, beneficiaries, history, noted, ite
     outs = [signal for signal in signals if signal.kind == "out"]
     worth = _usage_bets(alerter, item, outs)
     if not worth:
+        store.mark_seen(item, alerted=True)
+        return
+    teams = {item.team, *(signal.team for signal in worth)}
+    if any(_game_underway(odds, team, now) for team in teams if team):
+        log.info("no alert during the game for %s", item.team or ", ".join(signal.player for signal in worth))
         store.mark_seen(item, alerted=True)
         return
     quotes: dict = {}
